@@ -176,6 +176,8 @@ Sepuluh prinsip berikut mengikat seluruh keputusan produk dan teknis dalam dokum
 
 10. **Jangan over-engineering untuk MVP.** Setiap keputusan arsitektur di dokumen ini dipilih agar realistis dikerjakan oleh 3 engineer tanpa dedicated DevOps/SRE dalam waktu terbatas — kompleksitas yang tidak dibutuhkan MVP secara eksplisit ditunda (lihat Section 22).
 
+11. **Isolasi data berlapis (defense in depth).** Workspace isolation ditegakkan di dua lapisan yang saling independen: lapisan aplikasi (membership check server-side di setiap query) dan lapisan database (Row Level Security / RLS di Supabase/PostgreSQL). Satu lapisan tidak boleh menjadi satu-satunya penjaga — jika lapisan aplikasi punya bug, RLS tetap mencegah kebocoran data lintas-Workspace, dan sebaliknya. Untuk aplikasi finansial, satu lapisan keamanan tidak cukup.
+
 
 ---
 
@@ -692,6 +694,8 @@ Total 140 Functional Requirement. Jumlah ini natural dari cakupan fitur di Secti
 | FR-012 | Tipe Workspace tidak dapat diubah setelah dibuat | Must | FR-010 | Request update tipe ditolak di layer domain |
 | FR-013 | User dapat berpindah antar Workspace melalui switcher | Must | FR-009 | Konteks aktif berubah sesuai Workspace terpilih |
 | FR-014 | Query data finansial di-scope ke workspace_id aktif dan terautorisasi | Must | FR-007 | Request dengan workspace_id lain tanpa membership ditolak 403 |
+| FR-014a | RLS aktif di seluruh tabel data finansial; policy menolak baris milik Workspace yang bukan membership user | Must | FR-007 | Test: query tanpa filter aplikasi via koneksi user tetap tidak mengembalikan baris Workspace lain |
+| FR-014b | Background job & operasi service-role men-scope workspace_id secara eksplisit (RLS di-bypass secara sadar, bukan tidak sengaja) | Must | FR-062, FR-099 | Test: job hanya menyentuh baris Workspace yang menjadi target iterasinya |
 | FR-015 | Business Workspace dapat mengundang member baru | Should | FR-010 | Member baru muncul di daftar setelah menerima undangan |
 | FR-016 | Business Workspace member memiliki role admin atau member | Must | FR-015 | Role tersimpan dan memengaruhi akses Settings |
 | FR-017 | Hanya admin yang dapat mengubah pengaturan Business Workspace | Must | FR-016 | Member non-admin ditolak saat mencoba ubah Settings |
@@ -1685,7 +1689,23 @@ Seluruh notifikasi bersifat in-app (badge + daftar riwayat) di MVP — tidak ada
 
 ## Workspace Isolation
 
-Seluruh query data finansial di-scope ke `workspace_id` yang divalidasi melalui membership check server-side — `workspace_id` yang dikirim dari client tidak pernah dipercaya tanpa verifikasi ini (FR-014, konsisten dengan Product Principle #9).
+Workspace isolation ditegakkan di **dua lapisan independen** (Product Principle #11 — defense in depth):
+
+**Lapisan 1 — Aplikasi (membership check).** Seluruh query data finansial di-scope ke `workspace_id` yang divalidasi melalui membership check server-side — `workspace_id` yang dikirim dari client tidak pernah dipercaya tanpa verifikasi ini (FR-014, konsisten dengan Product Principle #9). Ini adalah lapisan utama dan tetap wajib.
+
+**Lapisan 2 — Database (Row Level Security / RLS).** Setiap tabel yang menyimpan data finansial (`wallets`, `transactions`, `categories`, `recurring_rules`, `calendar_events`, `budgets`, `goals`, `goal_contributions`, `forecast_snapshots`, `notifications`, `workspace_members`) mengaktifkan RLS di Supabase/PostgreSQL. Policy RLS memastikan sebuah baris hanya dapat dibaca/ditulis jika `workspace_id` baris tersebut termasuk dalam daftar Workspace tempat user (dari `auth.uid()` Supabase) menjadi member. Ini adalah jaring pengaman terakhir: bahkan jika sebuah query di lapisan aplikasi lupa menyertakan filter `workspace_id`, database menolak mengembalikan baris milik Workspace lain.
+
+## Strategi Akses Database (RLS Enforcement)
+
+Agar RLS benar-benar efektif, akses database dari aplikasi **wajib membawa identitas user** sehingga `auth.uid()` di dalam policy RLS terisi. Keputusan arsitektur MVP:
+
+* **Akses data finansial rutin (CRUD Wallet, Transaction, Budget, Goal, Calendar read) menggunakan Supabase client yang membawa session token user.** Dengan ini `auth.uid()` terisi otomatis dan RLS aktif tanpa konfigurasi tambahan per query. Inilah jalur default untuk seluruh request yang dipicu oleh aksi user.
+
+* **Operasi privileged tertentu menggunakan service role (bypass RLS) secara sadar dan terbatas.** Hanya untuk: (a) background job (recurring occurrence generator, forecast recompute) yang berjalan tanpa konteks user dan sudah men-scope sendiri per Workspace; (b) operasi administratif sistem. Setiap penggunaan service role wajib men-scope query secara eksplisit ke `workspace_id` yang benar, karena RLS tidak melindunginya. Service role key tidak pernah terekspos ke client (Section Secret Management).
+
+* **Larangan eksplisit:** menggunakan service role key untuk melayani request user biasa. Melakukan itu mematikan RLS untuk seluruh jalur request user dan mereduksi keamanan kembali ke satu lapisan — melanggar Product Principle #11.
+
+> Catatan konsistensi: referensi "Prisma parameterized query" di bagian Injection di bawah berlaku bila tim memilih menambahkan query builder untuk agregasi kompleks (mis. Forecast). Jika query builder tersebut mengakses DB via service role, ia berada di kategori "operasi privileged" di atas dan **wajib** men-scope `workspace_id` secara manual. Untuk jalur request user, Supabase client + RLS adalah default. Detail lengkap ada di `ARCHITECTURE.md`.
 
 ## Authentication
 
@@ -1728,7 +1748,7 @@ Context Builder mengirim data agregat minimum yang diperlukan ke Gemini 2.5 Flas
 ## Perlindungan Tambahan
 
 * **IDOR:** Seluruh akses entity by ID melalui validasi membership Workspace, bukan hanya keberadaan ID di database.
-* **Injection:** Prisma parameterized query mencegah SQL injection; raw SQL (bila digunakan untuk agregasi kompleks) tetap menggunakan parameter binding, tidak pernah string concatenation.
+* **Injection:** Akses data melalui Supabase client (jalur default request user) dan/atau query builder parameterized (bila ditambahkan untuk agregasi kompleks) mencegah SQL injection; raw SQL — bila digunakan untuk agregasi kompleks seperti Forecast — tetap menggunakan parameter binding, tidak pernah string concatenation. Query builder yang mengakses DB via service role wajib mengikuti aturan scoping `workspace_id` di bagian Strategi Akses Database.
 * **Mass assignment:** API menerima payload melalui schema Zod yang eksplisit mendefinisikan field yang diizinkan — field tak terduga dalam payload ditolak, bukan diteruskan mentah ke database.
 * **Error response aman:** Lihat Section 14 — pesan error tidak pernah membocorkan detail internal.
 
@@ -1827,7 +1847,8 @@ Diukur sebagai weekly active workspace (Workspace dengan minimal satu aktivitas 
 
 * [ ] Seluruh 16 fitur di Section 6 berfungsi end-to-end.
 * [ ] 140 Functional Requirement di Section 7 terverifikasi.
-* [ ] Workspace isolation teruji eksplisit (tidak ada kebocoran data lintas-Workspace).
+* [ ] Workspace isolation teruji eksplisit di **dua lapisan** (aplikasi + RLS): membership check menolak akses lintas-Workspace, DAN RLS menolak baris lintas-Workspace bahkan tanpa filter aplikasi.
+* [ ] RLS aktif dan berpolicy di seluruh tabel data finansial; diverifikasi dengan test yang sengaja menghilangkan filter aplikasi dan memastikan database tetap tidak membocorkan data.
 * [ ] Forecast dan AI Copilot tidak pernah mengubah data Transaction/Budget/Goal.
 * [ ] Seluruh operasi finansial kritikal (Transaction, Transfer, Goal contribution) atomik dan teruji.
 * [ ] Recurring occurrence generation idempotent dan teruji terhadap edge case tanggal 28-31.
@@ -1844,7 +1865,8 @@ Diukur sebagai weekly active workspace (Workspace dengan minimal satu aktivitas 
 
 | Risk | Category | Probability | Impact | Mitigation |
 |---|---|---|---|---|
-| Kebocoran data lintas-Workspace akibat query tanpa scope | Technical/Security | Medium | Sangat tinggi | Wajib middleware/helper query yang selalu menyertakan workspace_id; test otorisasi eksplisit di setiap endpoint finansial |
+| Kebocoran data lintas-Workspace akibat query tanpa scope | Technical/Security | Medium | Sangat tinggi | Defense in depth: membership check di aplikasi (lapisan 1) + RLS di database (lapisan 2, Product Principle #11); test otorisasi eksplisit di setiap endpoint finansial |
+| Service role key dipakai untuk request user biasa → RLS ter-bypass diam-diam, keamanan turun ke satu lapisan | Technical/Security | Medium | Sangat tinggi | Request user memakai Supabase client dengan session token user; service role hanya untuk background job & operasi admin yang men-scope workspace_id manual; larangan eksplisit di Section 16 + review kode |
 | Cached balance Wallet tidak konsisten dengan ledger | Technical | Medium | Tinggi | Mutasi saldo dan Transaction dalam satu database transaction; job rekonsiliasi berkala |
 | Duplicate recurring occurrence akibat retry job | Technical | Medium | Tinggi | Idempotency key dan unique constraint di level database, bukan hanya logic aplikasi |
 | Forecast memberi angka presisi palsu untuk user cold-start | Product/AI | Tinggi | Sedang | Disclaimer eksplisit dan pembatasan komponen historis saat data belum cukup |
