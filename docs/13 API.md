@@ -1,0 +1,167 @@
+# 13. API
+
+**Status dokumen:** Melengkapi 12. Backend (ringkasan endpoint per domain). Dokumen ini berisi kontrak detail: request body, response shape, status code, dan error handling per endpoint — level yang dipakai FE dan BE untuk saling menyepakati bentuk data tanpa menebak dari kode satu sama lain. Sesuai Definition of Done Section 9 Blueprint ("kontrak API terdokumentasi minimal, bisa cukup lewat tipe TypeScript bersama"), tipe di dokumen ini adalah representasi naratif dari tipe yang hidup di `/types` (14. Frontend Specification, 14.1) — bukan dokumen terpisah yang bisa tidak sinkron dengan kode.
+
+---
+
+## 13.1 Konvensi Umum
+
+**Format response sukses:**
+```
+{ "data": <payload>, "meta"?: { ... } }
+```
+
+**Format response error:**
+```
+{ "error": { "code": string, "message": string, "field"?: string } }
+```
+
+**Status code yang dipakai konsisten di semua endpoint:**
+
+| Kode | Kapan dipakai |
+|---|---|
+| 200 | Read/update berhasil |
+| 201 | Create berhasil |
+| 400 | Validasi input gagal (body tidak sesuai schema) |
+| 401 | Tidak terautentikasi (session/JWT invalid) |
+| 403 | Terautentikasi tapi tidak berhak — termasuk gagal `workspace-guard` (12. Backend, 12.2) |
+| 404 | Resource tidak ditemukan atau ada di Workspace lain (**disengaja** disamakan dengan tidak ditemukan, bukan dibedakan — lihat 13.2) |
+| 409 | Konflik constraint (misal Budget duplikat untuk kategori+periode yang sama) |
+| 500 | Error tak terduga di server |
+
+**Autentikasi:** setiap request ke `/api/*` (kecuali auth routes sendiri) wajib menyertakan session/JWT yang valid. Tidak ada endpoint publik/anonim untuk data Workspace.
+
+---
+
+## 13.2 Kenapa 404, Bukan 403, untuk Resource di Workspace Lain
+
+Ini keputusan keamanan yang sengaja, worth didokumentasikan eksplisit karena mudah diimplementasikan secara tidak konsisten.
+
+Kalau user meminta `GET /api/wallet/:id` untuk Wallet yang sebenarnya ada tapi milik Workspace lain, response yang benar adalah **404 (tidak ditemukan)**, bukan 403 (dilarang). Membedakan keduanya berarti membocorkan informasi bahwa resource itu **ada** — sekalipun user tidak berhak mengaksesnya. Untuk aplikasi finansial, konfirmasi keberadaan data yang bukan milik user adalah kebocoran informasi yang tidak perlu terjadi, meski kecil.
+
+Aturan ini berlaku di **semua** endpoint yang menerima ID resource (Wallet, Transaction, Budget, Goal) sebagai path param — `workspace-guard` (12. Backend, 12.2) mengembalikan 404, bukan 403, ketika validasi kepemilikan Workspace gagal.
+
+---
+
+## 13.3 Kontrak per Domain
+
+### Workspace
+
+**`POST /api/workspace`**
+Request: `{ name: string, type: "personal" | "business" }`
+Response 201: `{ data: { id, name, type, created_at } }`
+Error 400: kalau user masih punya Workspace lain yang belum selesai onboarding (12. Backend, 12.3) — `code: "ONBOARDING_INCOMPLETE"`
+
+**`GET /api/workspace/:id`**
+Response 200: `{ data: { id, name, type, created_at } }`
+Response 404: Workspace tidak ada, atau ada tapi user bukan anggota
+
+**`PATCH /api/workspace/:id`**
+Request: `{ name?: string }` — **tidak ada field `type`** di schema request sama sekali (12. Backend, 12.3)
+
+---
+
+### Wallet
+
+**`GET /api/wallet?workspace_id=`**
+Response 200: `{ data: Wallet[] }` — hanya Wallet dengan `archived: false` secara default, tambahkan `?include_archived=true` untuk melihat semua
+
+**`POST /api/wallet`**
+Request: `{ workspace_id, name, wallet_type?: "personal" | "business", currency? }`
+Response 201: `{ data: Wallet }` — `cached_balance` selalu dimulai dari 0, diisi lewat Transaction pertama (saldo awal), bukan field langsung di request create
+
+**`PATCH /api/wallet/:id/archive`**
+Response 200: `{ data: { id, archived: true } }`
+Tidak ada `DELETE /api/wallet/:id` di API surface sama sekali (12. Backend, 12.3)
+
+---
+
+### Transaction
+
+**`GET /api/transaction?wallet_id=&from=&to=`**
+Response 200: `{ data: Transaction[] }` — filter tanggal wajib untuk mencegah query tanpa batas pada Wallet dengan histori panjang
+
+**`POST /api/transaction`**
+Request: `{ wallet_id, category_id?, goal_id?, amount, transaction_date, note? }`
+Response 201: `{ data: Transaction }`
+**Efek samping wajib:** `cached_balance` Wallet terkait ter-update dalam transaksi database yang sama (12. Backend, 12.3) — response tetap hanya mengembalikan Transaction yang baru dibuat, bukan Wallet ter-update (FE meng-invalidate query Wallet secara terpisah, 14. Frontend Specification, 14.3)
+
+**`PATCH /api/transaction/:id`** dan **`DELETE /api/transaction/:id`**
+Sama-sama memicu rekalkulasi `cached_balance` — tidak ada jalur "update tanpa rekalkulasi"
+
+---
+
+### Budget
+
+**`POST /api/budget`**
+Request: `{ workspace_id, category_id, amount, period?: "monthly" }`
+Response 409: kalau kombinasi (`workspace_id`, `category_id`, `period`) sudah ada — `code: "BUDGET_ALREADY_EXISTS"`, bukan overwrite diam-diam
+
+**`GET /api/budget/:id/realization`**
+Response 200: `{ data: { budgeted: number, spent: number, percentage: number } }` — dihitung dari transaksi sejak tanggal 1 bulan berjalan (12. Backend, 12.3), bukan sejak Budget dibuat
+
+---
+
+### Goal
+
+**`POST /api/goal`**
+Request: `{ workspace_id, name, target_amount, target_date }`
+
+**`POST /api/goal/:id/contribution`**
+Request: `{ wallet_id, amount, transaction_date }`
+Response 201: `{ data: Transaction }` — endpoint ini **membuat Transaction baru dengan `goal_id` terisi**, bukan menyimpan nominal kontribusi di tabel terpisah (12. Backend, 12.3)
+
+**`GET /api/goal/:id`**
+Response 200: `{ data: { ...goal, progress_percentage: number, status: "on_track" | "terlambat" } }` — `status` adalah derived value dihitung saat response, bukan kolom tersimpan
+
+---
+
+### Calendar
+
+**`GET /api/calendar-events?workspace_id=&month=`**
+Response 200: `{ data: CalendarEvent[] }` — dibaca dari tabel `calendar_events` yang sudah pre-generated oleh cron (10. Database), **bukan** hasil kalkulasi on-the-fly di endpoint ini
+Kalau bulan yang diminta belum punya event ter-generate (misal user langsung lompat 6 bulan ke depan): response tetap 200 dengan array kosong, bukan error — cron job akan mengejar di siklus berikutnya
+
+---
+
+### Forecast
+
+**`GET /api/forecast?workspace_id=&wallet_id=`**
+Response 200: `{ data: { generated_at, horizon_days, entries: ForecastEntry[] }, meta: { is_cold_start: boolean } }`
+`meta.is_cold_start: true` ketika user belum punya histori transaksi 30 hari — FE memakai flag ini untuk menampilkan catatan "proyeksi akan makin akurat" (Edge Case Section 4.7), bukan menebak dari data kosong
+
+Endpoint ini **tidak menerima method POST/trigger** — tidak ada cara memicu recompute dari API publik, sesuai keputusan bahwa hanya cron yang boleh regenerate (12. Backend, 12.3)
+
+---
+
+### AI Copilot
+
+**`POST /api/ai-copilot/chat`**
+Request: `{ workspace_id, message: string, context?: { current_date?: string, current_page?: string } }`
+Response 200: `{ data: { reply: string, sources?: { type: "forecast" | "transaction" | "budget", ref_id: string }[] } }`
+
+`sources` adalah array opsional yang menunjuk balik ke data yang dipakai AI untuk klaim angkanya — mendukung Definition of Done AI ("jawaban bisa ditelusuri ke data riil"). Tidak wajib diisi untuk setiap respons (misal jawaban percakapan umum tidak butuh sumber), tapi **wajib diisi** setiap kali respons menyebutkan angka finansial spesifik.
+
+**Cold-start response:** kalau `context_builder` mendeteksi data tidak cukup (belum ada transaksi sama sekali), `reply` berisi pengakuan eksplisit keterbatasan data (Edge Case Section 4.8) — ini logic di `ai-copilot.service.ts`, bukan sekadar berharap Claude API menjawab begitu tanpa instruksi eksplisit di prompt.
+
+---
+
+## 13.4 Error Code yang Dipakai Berulang
+
+| Code | Endpoint mana saja | Arti |
+|---|---|---|
+| `ONBOARDING_INCOMPLETE` | Workspace create | Ada Workspace lain yang belum selesai onboarding |
+| `BUDGET_ALREADY_EXISTS` | Budget create | Konflik unique constraint kategori+periode |
+| `WALLET_ARCHIVED` | Transaction create/update | Wallet tujuan sudah diarsipkan, tidak bisa menerima transaksi baru |
+| `WORKSPACE_TYPE_LOCKED` | Workspace update | Percobaan mengubah field `type` (seharusnya tidak pernah terjadi kalau schema request benar, tapi tetap dijaga di service layer sebagai defense-in-depth) |
+
+---
+
+## Dokumen Terkait
+
+| Dokumen | Isi |
+|---|---|
+| 12. Backend | Service layer, business rules yang mendasari setiap kontrak di dokumen ini |
+| 14. Frontend Specification | Tipe TypeScript bersama di `/types` yang menjadi sumber kebenaran teknis kontrak ini |
+| 10. Database | Skema tabel yang membentuk shape data di setiap response |
+| 11/16. System Design | Request lifecycle tingkat tinggi untuk Transaction dan AI Copilot |

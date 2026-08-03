@@ -1,0 +1,176 @@
+# 10. Database
+
+**Status dokumen:** Melengkapi 16. System Design (16.2 ERD ringkas). Dokumen ini berisi definisi kolom lengkap, tipe data, constraint, strategi indexing, dan aturan migrasi — level detail yang dibutuhkan untuk langsung menulis schema Prisma, bukan mengulang diagram ERD yang sama.
+
+---
+
+## 10.1 Prinsip Skema
+
+1. **`workspace_id` di hampir semua tabel sejak migrasi pertama** — bukan ditambahkan belakangan (Technical Notes Section 4.1 Blueprint). Satu-satunya pengecualian adalah `Transaction`, yang terisolasi lewat `wallet_id → workspace_id`.
+2. **UUID sebagai primary key di semua tabel** — bukan auto-increment integer, supaya ID tidak bisa ditebak lintas Workspace (mendukung Non-Functional Requirement isolasi data di 07. PRD).
+3. **Soft-delete via kolom `archived`/`is_active`, bukan hard delete**, untuk entitas yang mungkin sudah punya histori relasi (Wallet, Category).
+4. **Kolom `cached_balance` dan sejenisnya adalah derived data**, wajib di-update lewat service layer dalam transaksi atomik (lihat 16. System Design, 16.3) — tidak boleh dihitung ulang dari agregat setiap read.
+
+---
+
+## 10.2 Definisi Tabel Lengkap
+
+### `workspaces`
+
+| Kolom | Tipe | Constraint | Catatan |
+|---|---|---|---|
+| `id` | uuid | PK, default `gen_random_uuid()` | |
+| `name` | varchar(100) | not null | |
+| `type` | enum(`personal`, `business`) | not null | Tidak dapat diubah setelah dibuat — enforced di service layer, bukan hanya UI |
+| `created_at` | timestamptz | default `now()` | |
+| `updated_at` | timestamptz | default `now()` | |
+
+### `workspace_members`
+
+| Kolom | Tipe | Constraint | Catatan |
+|---|---|---|---|
+| `id` | uuid | PK | |
+| `workspace_id` | uuid | FK → workspaces, not null | |
+| `user_id` | uuid | FK → users (dari provider auth), not null | |
+| `role` | enum(`admin`, `member`) | not null, default `member` | Tanpa granular permission (Section 7 Blueprint) |
+| `invited_at` | timestamptz | default `now()` | |
+
+**Constraint tambahan:** unique composite (`workspace_id`, `user_id`) — satu user tidak boleh terdaftar dua kali di Workspace yang sama.
+
+### `wallets`
+
+| Kolom | Tipe | Constraint | Catatan |
+|---|---|---|---|
+| `id` | uuid | PK | |
+| `workspace_id` | uuid | FK → workspaces, not null | |
+| `name` | varchar(100) | not null | |
+| `wallet_type` | enum(`personal`, `business`) | nullable | Hanya relevan untuk Business Workspace (Acceptance Criteria Section 4.3) |
+| `cached_balance` | numeric(14,2) | not null, default 0 | Derived data — lihat 10.1 poin 4 |
+| `currency` | varchar(3) | not null, default `IDR` | |
+| `archived` | boolean | not null, default false | Soft-delete |
+| `created_at` | timestamptz | default `now()` | |
+
+### `categories`
+
+| Kolom | Tipe | Constraint | Catatan |
+|---|---|---|---|
+| `id` | uuid | PK | |
+| `workspace_id` | uuid | FK → workspaces, not null | |
+| `name` | varchar(50) | not null | |
+| `direction` | enum(`income`, `expense`) | not null | |
+| `is_default` | boolean | not null, default false | Membedakan kategori bawaan sistem vs custom user (Technical Notes Section 4.4) |
+| `archived` | boolean | not null, default false | Soft-reference — kategori lama tidak dihapus permanen jika sudah dipakai transaksi (Edge Case Section 4.4) |
+
+### `transactions`
+
+| Kolom | Tipe | Constraint | Catatan |
+|---|---|---|---|
+| `id` | uuid | PK | |
+| `wallet_id` | uuid | FK → wallets, not null | Tidak ada `workspace_id` langsung — terisolasi lewat Wallet (16. System Design, 16.2) |
+| `category_id` | uuid | FK → categories, nullable | Nullable supaya kategori bisa dihapus tanpa cascade delete transaksi |
+| `goal_id` | uuid | FK → goals, nullable | Diisi hanya jika transaksi ini adalah kontribusi ke Goal (Technical Notes Section 4.6) |
+| `amount` | numeric(14,2) | not null | Signed — positif untuk income, negatif untuk expense, konsisten dengan `direction` di Category terkait |
+| `transaction_date` | date | not null | Boleh tanggal masa depan (Edge Case Section 4.4 — bagian dari filosofi planning) |
+| `note` | text | nullable | |
+| `created_at` | timestamptz | default `now()` | |
+
+**Query rule wajib (bukan constraint database, tapi aturan service layer):** setiap query `Transaction` harus join lewat `wallets.workspace_id` untuk validasi isolasi Workspace — tidak boleh query `Transaction` global tanpa filter ini (16. System Design, 16.2 poin 1).
+
+### `budgets`
+
+| Kolom | Tipe | Constraint | Catatan |
+|---|---|---|---|
+| `id` | uuid | PK | |
+| `workspace_id` | uuid | FK → workspaces, not null | |
+| `category_id` | uuid | FK → categories, not null | |
+| `amount` | numeric(14,2) | not null | |
+| `period` | enum(`monthly`) | not null, default `monthly` | MVP tidak mendukung custom periode (Business Rule Section 4.5) |
+| `created_at` | timestamptz | default `now()` | |
+
+**Constraint tambahan:** unique composite (`workspace_id`, `category_id`, `period`) — satu kategori hanya boleh punya satu Budget aktif per periode.
+
+### `goals`
+
+| Kolom | Tipe | Constraint | Catatan |
+|---|---|---|---|
+| `id` | uuid | PK | |
+| `workspace_id` | uuid | FK → workspaces, not null | |
+| `name` | varchar(100) | not null | |
+| `target_amount` | numeric(14,2) | not null | |
+| `target_date` | date | not null | |
+| `created_at` | timestamptz | default `now()` | |
+
+### `calendar_events`
+
+| Kolom | Tipe | Constraint | Catatan |
+|---|---|---|---|
+| `id` | uuid | PK | |
+| `workspace_id` | uuid | FK → workspaces, not null | |
+| `source_type` | enum(`recurring_bill`, `goal_milestone`) | not null | |
+| `source_id` | uuid | nullable | Referensi ke recurring bill definition atau Goal terkait |
+| `event_date` | date | not null | Hasil pre-generate, bukan dihitung on-the-fly (Technical Notes Section 4.2) |
+| `amount` | numeric(14,2) | nullable | Nullable untuk event jenis milestone yang tidak selalu bernilai nominal |
+
+### `forecast_snapshots`
+
+| Kolom | Tipe | Constraint | Catatan |
+|---|---|---|---|
+| `id` | uuid | PK | |
+| `workspace_id` | uuid | FK → workspaces, not null | |
+| `generated_at` | timestamptz | default `now()` | |
+| `horizon_days` | integer | not null | 30 atau 60 (Acceptance Criteria Section 4.7) |
+
+### `forecast_entries`
+
+| Kolom | Tipe | Constraint | Catatan |
+|---|---|---|---|
+| `id` | uuid | PK | |
+| `forecast_snapshot_id` | uuid | FK → forecast_snapshots, not null | |
+| `wallet_id` | uuid | FK → wallets, not null | Forecast dihitung per Wallet (Acceptance Criteria Section 4.7) |
+| `date` | date | not null | |
+| `projected_balance` | numeric(14,2) | not null | |
+
+**Constraint tambahan:** unique composite (`forecast_snapshot_id`, `wallet_id`, `date`) — satu entry per kombinasi ini.
+
+---
+
+## 10.3 Strategi Indexing
+
+| Tabel | Index | Alasan |
+|---|---|---|
+| `workspace_members` | composite (`workspace_id`, `user_id`) | Query paling sering: cek keanggotaan user di Workspace tertentu saat autorisasi request |
+| `wallets` | (`workspace_id`) | Listing Wallet per Workspace |
+| `transactions` | composite (`wallet_id`, `transaction_date`) | Query paling sering: transaksi dalam rentang tanggal untuk satu Wallet — dipakai Calendar dan Forecast |
+| `categories` | composite (`workspace_id`, `archived`) | Filter kategori aktif per Workspace saat render form Transaction |
+| `budgets` | composite (`workspace_id`, `category_id`) | Lookup realisasi Budget per kategori |
+| `calendar_events` | composite (`workspace_id`, `event_date`) | Query inti Calendar: semua event dalam satu bulan tampilan |
+| `forecast_entries` | composite (`forecast_snapshot_id`, `wallet_id`, `date`) | Sama dengan unique constraint di atas — index ini otomatis terbentuk dari constraint |
+
+---
+
+## 10.4 Aturan Migrasi
+
+1. **Migrasi dijalankan lewat Prisma Migrate**, bukan SQL manual di luar tracking — supaya riwayat migrasi reversible dan terdokumentasi (Definition of Done Section 9 Blueprint: "migrasi database terdokumentasi dan reversible").
+2. **`workspace_id` wajib ada di migrasi pertama tabel manapun yang butuh isolasi data** — menambahkannya di migrasi belakangan berarti backfill data lama, yang jauh lebih mahal dan rawan error daripada mendesainnya sejak awal.
+3. **Setiap migrasi yang mengubah kolom bertipe uang (`numeric`) wajib direview dua orang** sebelum di-apply ke staging — presisi desimal yang salah pada tabel finansial adalah kelas bug yang paling mahal diperbaiki setelah data production terlanjur masuk.
+4. **Tidak ada migrasi yang menghapus kolom secara langsung** di siklus 32 hari ini — kalau sebuah kolom perlu dipensiunkan, tandai deprecated dulu (berhenti ditulis, tetap dibaca), baru dihapus di migrasi terpisah setelah dipastikan tidak ada kode yang masih bergantung padanya.
+
+---
+
+## 10.5 Yang Sengaja Tidak Ada di Skema Ini
+
+Konsisten dengan Scope Boundary (07. PRD):
+
+- Tidak ada tabel untuk payment/billing nyata — monetisasi MVP hanya flag `subscription_tier` sederhana kalau dibutuhkan skeleton UI, bukan tabel transaksi pembayaran (Section 7 Blueprint, Deferrable).
+- Tidak ada tabel untuk OCR/receipt, bank sync, atau integrasi pihak ketiga — eksplisit di luar scope (07. PRD, Section Eksplisit Ditunda/Di Luar Scope).
+- Tidak ada tabel audit log terpisah untuk MVP ini — kalau dibutuhkan pasca-MVP (misal untuk "kenapa Forecast saya berubah"), ini masuk skema v2, bukan ditambahkan di tengah eksekusi 32 hari.
+
+---
+
+## Dokumen Terkait
+
+| Dokumen | Isi |
+|---|---|
+| 16. System Design | ERD ringkas, arsitektur, request lifecycle yang menggunakan tabel-tabel ini |
+| 09. Information Architecture | Bagaimana `workspace_members` dan `categories` memengaruhi visibility UI |
+| 07. PRD | Scope fitur yang menentukan tabel mana yang wajib ada di MVP ini |

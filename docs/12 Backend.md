@@ -1,0 +1,128 @@
+# 12. Backend
+
+**Status dokumen:** Melengkapi 11/16. System Design (arsitektur besar) dan 10. Database (skema tabel). Dokumen ini berisi struktur service layer per domain, business rules yang wajib ditegakkan di kode (bukan hanya di UI), dan kontrak endpoint API — level detail yang dibutuhkan Engineer A untuk menulis route handler dan service function secara langsung.
+
+---
+
+## 12.1 Struktur Service Layer
+
+Mengikuti prinsip modularisasi kode di dalam monolith (Section 7 Blueprint: "modularisasi kode, bukan service, sudah cukup untuk menjaga migrasi ke microservice pasca-MVP tetap mungkin"):
+
+```
+/lib/server
+  /workspace
+    workspace.service.ts       → create, isolasi data, validasi tipe terkunci
+  /wallet
+    wallet.service.ts          → CRUD, update cached_balance atomik
+  /transaction
+    transaction.service.ts     → CRUD, wajib dipanggil dari 2 entry point yang sama
+  /budget
+    budget.service.ts          → CRUD, kalkulasi realisasi terjadwal
+  /goal
+    goal.service.ts            → CRUD, kontribusi via referensi Transaction
+  /calendar
+    calendar.service.ts        → render event, recurring bill generator
+  /forecast
+    forecast.service.ts        → rule-based projection engine
+  /ai-copilot
+    context-builder.ts         → agregasi data server-side
+    ai-copilot.service.ts      → orchestration ke Claude API
+  /shared
+    workspace-guard.ts         → middleware validasi workspace_id di setiap request
+```
+
+**Aturan struktural:** setiap domain punya service file sendiri, dan **tidak ada service yang query tabel domain lain secara langsung** — kalau `budget.service.ts` butuh data Transaction, dia memanggil fungsi dari `transaction.service.ts`, bukan menulis query Prisma langsung ke tabel `transactions`. Ini menjaga business rules tetap di satu tempat per domain, dan menjadi titik potong yang jelas kalau migrasi ke microservice dibutuhkan pasca-MVP.
+
+---
+
+## 12.2 `workspace-guard`: Middleware Wajib di Semua Route
+
+Ini komponen paling kritis di seluruh backend, karena Definition of Done Section 9 Blueprint eksplisit meminta pengujian isolasi data antar Workspace.
+
+**Fungsi:** setiap route yang menerima `workspace_id` (baik dari path param, body, atau query) wajib melewati middleware ini sebelum masuk ke service layer. Middleware memverifikasi bahwa user yang sedang login benar-benar anggota (`workspace_members`) dari Workspace tersebut — bukan hanya mengandalkan foreign key di database.
+
+```
+Request masuk → workspace-guard cek workspace_members(user_id, workspace_id) → 
+  lolos → lanjut ke service layer
+  gagal → 403, request dihentikan sebelum menyentuh service layer
+```
+
+**Kenapa ini tidak boleh jadi tanggung jawab tiap service secara individual:** kalau validasi ini ditulis ulang di setiap service file, risiko ada satu service yang lupa menambahkannya jauh lebih tinggi dibanding satu middleware terpusat yang wajib dilewati semua route. Ini realisasi langsung dari catatan di 16. System Design (16.2): "isolasi Workspace bukan hanya soal foreign key."
+
+---
+
+## 12.3 Business Rules per Domain (yang wajib ditegakkan di kode, bukan hanya UI)
+
+Ini bagian paling penting dari dokumen ini — aturan di sini **tidak boleh** hanya berupa validasi di frontend, karena endpoint API bisa dipanggil langsung tanpa lewat UI (Definition of Done Backend Section 9 Blueprint: "tidak ada endpoint yang percaya buta pada payload client").
+
+### Workspace
+- Tipe (`personal`/`business`) tidak dapat diubah setelah dibuat — endpoint update Workspace **tidak boleh menerima field `type`** sama sekali, bukan hanya menolaknya secara kondisional.
+- User tidak dapat membuat Workspace kedua sebelum menyelesaikan onboarding Workspace pertama (Edge Case Section 4.1) — dicek di `workspace.service.ts` saat create, bukan diasumsikan FE akan mencegahnya.
+
+### Wallet
+- Wallet tidak dapat dihapus permanen jika sudah punya histori Transaction — endpoint delete hanya mengizinkan operasi arsipkan (`archived = true`), tidak ada endpoint hard-delete untuk Wallet yang sudah dipakai (Business Rule Section 4.3).
+- Saldo negatif diizinkan — service layer **tidak boleh menolak** transaksi yang membuat saldo Wallet jadi negatif, karena ini sinyal penting untuk Forecast/AI, bukan error (Edge Case Section 4.3).
+
+### Transaction
+- Setiap insert/update Transaction wajib memicu rekalkulasi `cached_balance` Wallet terkait, **dalam satu database transaction** yang sama (16. System Design, 16.3) — tidak ada jalur kode yang menulis Transaction tanpa melalui fungsi ini.
+- Tanggal masa depan diizinkan tanpa validasi penolakan (Edge Case Section 4.4).
+- Saat kategori dihapus/diarsipkan, **tidak ada cascade delete** ke Transaction yang sudah memakainya — `category_id` di Transaction lama tetap tersimpan sebagai referensi historis (Edge Case Section 4.4).
+
+### Budget
+- Realisasi Budget dihitung dari transaksi sejak tanggal 1 bulan berjalan, **bukan sejak Budget dibuat** — ini logic eksplisit di `budget.service.ts`, bukan default agregat yang kebetulan berperilaku begitu (Edge Case Section 4.5).
+- Constraint unique (`workspace_id`, `category_id`, `period`) di level database (10. Database) dilengkapi validasi service layer yang memberi pesan error jelas, bukan hanya mengandalkan database constraint error mentah sampai ke response API.
+
+### Goal
+- Kontribusi Goal **wajib** disimpan sebagai referensi ke Transaction yang sudah ada (`goal_id` di tabel `transactions`), bukan tabel/nilai terpisah — mencegah double count saldo Wallet (Technical Notes Section 4.6).
+- Goal dengan `target_date` lewat tapi progress belum 100% tidak di-hide dari query manapun — status "terlambat" dihitung sebagai derived value saat response, bukan disimpan sebagai kolom yang bisa stale.
+
+### Forecast
+- Endpoint Forecast **tidak pernah menghitung ulang secara sinkron** saat dipanggil biasa — dia membaca `forecast_snapshots` terakhir yang sudah dihasilkan cron job (16. System Design, 16.3). Hanya ada satu jalur resmi untuk trigger recompute: cron terjadwal.
+- User baru tanpa histori transaksi tetap mendapat response Forecast valid (hanya dari income + recurring bill), dengan field eksplisit yang menandai tingkat kepercayaan rendah — bukan mengembalikan array kosong atau error (Edge Case Section 4.7).
+
+### AI Copilot
+- `context-builder.ts` **tidak pernah** mengirim raw row dari tabel `transactions` ke Claude API — selalu agregat terstruktur (Technical Notes Section 4.8).
+- Endpoint AI Copilot Cashflow Prediction **wajib** memanggil `forecast.service.ts` untuk mengambil snapshot yang ada, tidak diizinkan menghitung proyeksi sendiri di dalam `ai-copilot.service.ts` (16. System Design, 16.3 — poin paling kritis di seluruh sistem).
+- Tidak ada endpoint AI yang melakukan write (create/update/delete) — seluruh route AI Copilot bersifat read + generate text, tanpa exception (Business Rule Section 4.8).
+
+---
+
+## 12.4 Kontrak Endpoint (ringkasan per domain)
+
+Detail request/response body didokumentasikan lewat tipe TypeScript bersama di `/types` (14. Frontend Specification, 14.1), bukan Swagger penuh (Definition of Done Section 9: "kontrak API terdokumentasi minimal"). Tabel berikut adalah ringkasan method dan tujuan setiap route.
+
+| Domain | Endpoint | Catatan |
+|---|---|---|
+| Workspace | `POST /api/workspace` | Cek dulu belum ada onboarding pending (12.3) |
+| Workspace | `GET /api/workspace/:id` | Lewat workspace-guard |
+| Wallet | `GET, POST /api/wallet` | |
+| Wallet | `PATCH /api/wallet/:id/archive` | Bukan `DELETE` — sesuai Business Rule 12.3 |
+| Transaction | `GET, POST /api/transaction` | Endpoint yang sama dipanggil dari halaman Transaction maupun `DayDetailPanel` di FE |
+| Transaction | `PATCH, DELETE /api/transaction/:id` | Memicu rekalkulasi `cached_balance` |
+| Budget | `GET, POST /api/budget` | |
+| Goal | `GET, POST /api/goal` | |
+| Goal | `POST /api/goal/:id/contribution` | Insert Transaction dengan `goal_id` terisi, bukan endpoint terpisah yang menyimpan nominal sendiri |
+| Calendar | `GET /api/calendar-events?month=` | Read dari tabel pre-generated, bukan hitung on-the-fly |
+| Forecast | `GET /api/forecast` | Baca snapshot terbaru, tidak trigger compute |
+| AI Copilot | `POST /api/ai-copilot/chat` | Body termasuk context halaman aktif dari FE (tanggal yang sedang dilihat, dsb) |
+
+---
+
+## 12.5 Validasi Input (Definition of Done Backend)
+
+Setiap endpoint di atas wajib memvalidasi payload sebelum menyentuh service layer — menggunakan schema validation (misal Zod) yang didefinisikan berdampingan dengan tipe TypeScript di `/types`, supaya validasi runtime dan tipe compile-time tidak pernah tidak sinkron.
+
+**Yang wajib divalidasi di setiap endpoint tulis (create/update):**
+- Tipe data sesuai kolom database (10. Database) — terutama `numeric` untuk field uang, jangan menerima string yang belum diparse
+- `workspace_id` yang dikirim (jika ada di body) cocok dengan yang divalidasi `workspace-guard` — mencegah request yang lolos guard tapi mencoba menulis ke `workspace_id` lain lewat body
+
+---
+
+## Dokumen Terkait
+
+| Dokumen | Isi |
+|---|---|
+| 11/16. System Design | Arsitektur monolith, ERD, request lifecycle tingkat tinggi |
+| 10. Database | Definisi kolom dan constraint yang mendasari business rules di dokumen ini |
+| 14. Frontend Specification | Konsumen endpoint-endpoint di 12.4, termasuk tipe bersama di `/types` |
+| 07. PRD | Requirement produk yang menjadi sumber setiap business rule di 12.3 |

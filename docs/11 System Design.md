@@ -1,0 +1,92 @@
+# 11. System Design
+
+**Asumsi kerja:** dokumen ini melengkapi 14. Frontend Specification dan 15. UI Design System, dan mengikuti keputusan stack final di Section 7 Blueprint MVP — Next.js (App Router) monolith, PostgreSQL + Prisma, Claude API untuk AI Copilot. Diagram arsitektur, ERD, dan alur data dirujuk sebagai gambar terpisah di percakapan; dokumen ini berisi penjelasan dan keputusan teknis yang menyertainya.
+
+---
+
+## 16.1 Arsitektur Sistem
+
+**Keputusan inti (mengikuti Section 7 Blueprint): satu proses Next.js, dua peran.** Frontend (`/app`) dan API routes (`/api`) hidup di proyek yang sama — bukan dua service terpisah yang saling memanggil lewat jaringan. Ini bukan kompromi teknis, tapi keputusan sadar: memisahkan service di hari 1 menambah overhead deployment dan koordinasi yang tidak sepadan untuk tim 3 orang dalam 32 hari (Section 7). Modularisasi tetap dijaga di level kode (folder terpisah per domain fitur), supaya migrasi ke microservice pasca-MVP tetap mungkin tanpa menulis ulang logic dari nol.
+
+### Komponen dan tanggung jawabnya
+
+| Komponen | Tanggung jawab | Catatan |
+|---|---|---|
+| Frontend (`app/`) | Rendering UI, state management client (React Query + local state) | Detail lengkap di 14. Frontend Specification |
+| API routes (`api/`) | Auth, validasi input, CRUD, orchestration Forecast dan AI | Setiap endpoint wajib validasi input — tidak ada endpoint yang percaya buta pada payload client (Definition of Done Section 9) |
+| Prisma ORM | Lapisan akses database, migrasi terdokumentasi dan reversible | Query kompleks (agregasi Forecast) memakai raw query sebagai pengecualian terkontrol, bukan default |
+| PostgreSQL | Penyimpanan data relasional, satu sumber kebenaran | Dipilih atas NoSQL karena data finansial sangat relasional (Section 7) |
+| Cron background job | Generate occurrence recurring bill, recompute Forecast terjadwal | Cron sederhana (bukan message queue penuh) cukup untuk skala MVP — migrasi ke BullMQ+Redis relevan setelah skala user bertambah (Section 7) |
+| Claude API | Backend AI Copilot — narasi, analisis, rekomendasi | Dipanggil lewat context builder server-side, tidak pernah menerima raw transaction mentah |
+
+### Kenapa cron, bukan message queue
+
+Untuk skala MVP (belum banyak user), cron job terjadwal cukup dan menghindari operational overhead infrastruktur queue (Redis, worker process terpisah) yang tidak sepadan untuk 32 hari. Trade-off ini eksplisit: kalau skala user bertambah signifikan pasca-MVP, titik ini adalah kandidat pertama untuk dimigrasi ke queue penuh — dicatat di sini supaya keputusan ini tidak terlupa dan disalahartikan sebagai kelalaian teknis di kemudian hari.
+
+---
+
+## 16.2 Skema Database (ERD)
+
+Skema mengikuti prinsip multi-tenancy sejak hari 1 (Technical Notes Section 4.1): `workspace_id` hadir di hampir seluruh tabel turunan, karena retrofit multi-tenancy setelah MVP berjalan jauh lebih mahal daripada mendesainnya dari awal.
+
+### Tabel dan relasi kunci
+
+| Tabel | Relasi utama | Catatan desain |
+|---|---|---|
+| `Workspace` | Root entity — semua tabel lain bergantung padanya | Tipe (`personal`/`business`) tidak dapat diganti setelah dibuat (Acceptance Criteria Section 4.1) |
+| `WorkspaceMember` | Many-to-many antara `Workspace` dan user | Hanya relevan untuk Business Workspace; role dasar admin/member tanpa granular permission (Section 7) |
+| `Wallet` | Milik satu `Workspace` | `cached_balance` adalah kolom terhitung yang di-update di setiap mutasi Transaction — bukan agregat real-time (Technical Notes Section 4.3) |
+| `Category` | Milik satu `Workspace`, dipakai `Transaction` dan `Budget` | Tabel terpisah dengan flag `is_default` per tipe Workspace, bukan enum hardcoded (Technical Notes Section 4.4) — memudahkan kategori custom pasca-MVP |
+| `Transaction` | Milik satu `Wallet`, boleh terhubung ke satu `Goal` | Tidak punya `workspace_id` langsung — terisolasi lewat `Wallet`, tapi setiap query API wajib join lewat Wallet untuk validasi Workspace, tidak boleh query global tanpa filter |
+| `Budget` | Milik satu `Workspace`, mereferensikan satu `Category` | Berbasis kategori + periode bulanan saja di MVP, tidak ada budget lintas-kategori gabungan (Business Rule Section 4.5) |
+| `Goal` | Milik satu `Workspace`, kontribusi mereferensikan `Transaction` | Kontribusi disimpan sebagai entri Transaction yang sudah ada, bukan tabel duplikat — mencegah double count saldo Wallet (Technical Notes Section 4.6) |
+| `CalendarEvent` | Milik satu `Workspace` | Hasil pre-generate dari recurring bill oleh background job — bukan dihitung on-the-fly setiap render (Technical Notes Section 4.2) |
+| `ForecastSnapshot` | Milik satu `Workspace` | Disimpan sebagai snapshot per horizon (30/60/90 hari), bukan dihitung ulang setiap render Calendar (Technical Notes Section 4.7) |
+
+### Keputusan desain yang perlu diingat tim
+
+1. **Isolasi Workspace bukan hanya soal foreign key** — Definition of Done Section 9 eksplisit meminta pengujian bahwa user Workspace A tidak bisa akses data Workspace B lewat manipulasi request. Ini berarti setiap query di service layer wajib menyertakan filter `workspace_id`, tidak cukup mengandalkan foreign key constraint di database saja.
+2. **Soft-delete, bukan hard delete**, untuk Wallet dan Category yang sudah punya histori — transaksi lama tetap menyimpan label kategori historis meski kategori itu diubah/dihapus kemudian (Edge Case Section 4.4).
+3. **`workspace_id` di semua tabel sejak migrasi pertama** — bukan ditambahkan belakangan. Ini satu-satunya keputusan skema yang benar-benar tidak murah untuk diperbaiki setelah data mulai masuk.
+
+---
+
+## 16.3 Request Lifecycle — Alur Kritis
+
+Dua alur ini dipilih karena keduanya menyentuh titik integrasi paling rawan dari seluruh sistem: konsistensi saldo, dan potensi AI berhalusinasi angka.
+
+### A. Menambah Transaction baru
+
+Urutan (lihat diagram "lifecycle_tambah_transaksi"):
+
+1. User submit form — dari halaman Transaction atau langsung dari `DayDetailPanel` di Calendar. Keduanya memakai komponen `TransactionForm` yang sama (14. Frontend Specification, 14.2) supaya tidak ada dua sumber kebenaran data.
+2. API route memvalidasi input sebelum apa pun disentuh — sesuai Definition of Done Section 9, tidak ada endpoint yang percaya buta pada payload client.
+3. **Service layer menjalankan insert Transaction dan update `cached_balance` Wallet dalam satu database transaction (atomik)** — ini realisasi langsung dari mitigasi risiko teknis Section 8: kalau salah satu langkah gagal, keduanya harus rollback bersama.
+4. Forecast **tidak dihitung ulang secara sinkron** pada titik ini — cukup ditandai stale. Recompute penuh terjadi lewat cron job terjadwal (Technical Notes Section 4.7), bukan on-demand setiap ada perubahan data, karena ini bukan operasi real-time-critical.
+5. Di sisi client, React Query meng-invalidate query Calendar dan Forecast sekaligus (14. Frontend Specification, 14.3) — supaya tidak ada tampilan stale antar halaman setelah mutasi.
+
+### B. AI Copilot menjawab pertanyaan Cashflow Prediction
+
+Urutan (lihat diagram "lifecycle_ai_cashflow_prediction"):
+
+1. User bertanya lewat `ChatWindow`, membawa context halaman aktif (misal tanggal yang sedang dilihat di Calendar) sebagai bagian dari request.
+2. Context builder di server — **bukan di client** — mengagregasi data Workspace (Transaction, Budget, Forecast) menjadi ringkasan terstruktur. Ini keputusan eksplisit di Technical Notes Section 4.8: mengirim seluruh raw transaction ke LLM mahal dan rawan melebihi context window seiring data bertambah.
+3. **Context builder membaca `ForecastSnapshot` yang sudah ada, tidak menghitung ulang proyeksi dari nol.** Ini poin paling kritis di seluruh alur AI: Cashflow Prediction AI hanya menarasikan angka yang sama dengan yang dipakai UI Calendar biasa, supaya tidak ada dua sumber angka yang bisa saling kontradiksi (Acceptance Criteria Section 4.8).
+4. Ringkasan terstruktur (bukan raw data) dikirim ke Claude API.
+5. Respons dinarasikan kembali ke user, dengan setiap klaim angka yang idealnya bisa ditelusuri ke query sumber yang sama dengan yang dipakai UI — mendukung Definition of Done AI: "jawaban bisa ditelusuri ke data riil, teruji dengan minimal 2 skenario data (user baru/cold-start, dan user dengan histori cukup)."
+
+### Kenapa dua alur ini yang dipilih sebagai representasi sistem
+
+Kedua alur ini adalah tempat paling mungkin sistem "berbohong" ke user kalau desainnya salah: saldo Wallet yang stale menyesatkan seluruh Calendar dan Forecast, sementara AI yang menghitung ulang proyeksinya sendiri berisiko menyajikan angka berbeda dari yang dilihat user di layar yang sama. Keduanya bukan detail implementasi biasa — keduanya adalah keputusan kepercayaan (trust), yang untuk aplikasi finansial adalah hal paling mahal untuk diperbaiki setelah user kadung tidak percaya.
+
+---
+
+## 16.4 Yang Sengaja Tidak Dibahas di Dokumen Ini
+
+Konsisten dengan prinsip scope eksplisit di seluruh blueprint (Section 2, Section 8 mitigasi Scope Creep):
+
+- **Observability/monitoring tingkat lanjut** — Section 7 Blueprint sudah eksplisit menunda ini ("cukup logging dasar untuk MVP"), jadi tidak dirinci di sini.
+- **Skema payment gateway** — monetisasi MVP hanya skeleton UI (Section 7, Hari 29 Roadmap), belum ada tabel transaksi pembayaran nyata untuk dirancang.
+- **Desain untuk skala 10.000+ user** — dokumen ini merancang untuk validasi MVP dengan basis user kecil; keputusan seperti read replica, connection pooling, atau migrasi ke queue penuh didokumentasikan sebagai catatan trade-off (16.1), bukan dirancang detail sekarang, karena merancang untuk skala yang belum tentu tercapai adalah bentuk lain dari scope creep.
+
+Kalau kebutuhan ini muncul nyata pasca-MVP, ini masuk dokumen System Design v2 — bukan revisi dokumen ini di tengah eksekusi 32 hari.

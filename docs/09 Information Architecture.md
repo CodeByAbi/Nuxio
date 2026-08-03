@@ -1,0 +1,98 @@
+# 09. Information Architecture
+
+**Status dokumen:** Melengkapi 08. User Flow, merinci Section 6 (Information Architecture) dari MVP Product Blueprint secara lebih dalam — struktur navigasi, hierarki data, dan perbedaan visibility antara Workspace Personal dan Business. Diagram terkait ada di percakapan ("hierarki_workspace_entitas"), dokumen ini berisi penjelasan dan keputusan yang menyertainya.
+
+---
+
+## 9.1 Prinsip Dasar IA
+
+**Workspace adalah root entity** — bukan hanya secara data (lihat 16. System Design, 16.2), tapi juga secara navigasi. Semua yang muncul di sidebar, semua data yang bisa dilihat, semua entitas yang bisa dikelola, selalu ter-scope ke Workspace yang sedang aktif. User berpindah "konteks" lewat Switch Workspace, bukan lewat filter di dalam satu tampilan global.
+
+**Calendar sebagai landing page** bukan sekadar keputusan UI — ini keputusan IA yang menentukan bagaimana seluruh hierarki di bawahnya disusun. Halaman lain (Wallet, Transaction, Budget, Goal) tetap ada sebagai halaman mandiri untuk operasi CRUD detail, tapi kedudukannya sekunder terhadap Calendar (lihat 08. User Flow, 8.3).
+
+---
+
+## 9.2 Struktur Navigasi Lengkap
+
+```
+[Sidebar Navigasi — persistent, selalu ter-scope ke Workspace aktif]
+├─ Financial Planning Calendar   (landing page / home)
+├─ Wallet
+├─ Transaction
+├─ Budget
+├─ Goal
+├─ Forecast              (opsional sebagai entri sidebar — lihat 08. User Flow, 8.3 kenapa ini bisa cukup jadi toggle di Calendar)
+├─ AI Copilot (Chat)     (floating entry point, bukan entri sidebar biasa)
+└─ Workspace
+    ├─ Settings (nama, tipe — read-only setelah dibuat)
+    ├─ Members (khusus Business — tidak ada sama sekali di UI Personal)
+    └─ Switch Workspace (jika user punya lebih dari satu)
+```
+
+Struktur ini identik dengan ringkasan di 08. User Flow (8.4) — dokumen ini menambah detail *kenapa* setiap keputusan diambil, dan bagaimana visibility berubah antara dua tipe Workspace.
+
+---
+
+## 9.3 Hierarki Entitas Data
+
+Lihat diagram "hierarki_workspace_entitas".
+
+Workspace membungkus lima kelompok entitas turunan:
+
+| Entitas | Sifat |
+|---|---|
+| Wallet | Selalu ada, minimal satu per Workspace sejak onboarding |
+| Transaction | Selalu ada, tumbuh terus sepanjang penggunaan |
+| Budget | Opsional saat onboarding (skippable), diisi progresif |
+| Goal | Sepenuhnya opsional, tidak ada di onboarding sama sekali |
+| Members | **Hanya ada** untuk Workspace tipe Business |
+| Categories | Selalu ada, tapi **isinya berbeda** menurut tipe Workspace |
+
+### Kenapa Categories digambar terpisah dari entitas lain
+
+Categories bukan sekadar daftar pilihan di dropdown — dia adalah satu-satunya entitas yang **kontennya bercabang menurut tipe Workspace** sejak awal (Personal: "Makan", "Transport"; Business: "Operasional", "Gaji Karyawan" — lihat 07. PRD). Entitas lain (Wallet, Transaction, Budget, Goal) strukturnya identik di kedua tipe Workspace, hanya datanya yang berbeda. Categories berbeda baik struktur *maupun* konten default-nya, sehingga digambar sebagai kelompok tersendiri di diagram, bukan disamakan dengan Wallet/Transaction.
+
+---
+
+## 9.4 Visibility: Personal vs Business
+
+Ini bagian paling mudah diimplementasikan secara tidak konsisten kalau tidak didokumentasikan eksplisit — perbedaan antara "disembunyikan" dan "tidak ada".
+
+| Elemen | Personal Workspace | Business Workspace |
+|---|---|---|
+| Menu Members | **Tidak ditampilkan sama sekali** di sidebar/Workspace settings — bukan disabled, bukan tooltip "khusus Business" | Ditampilkan, dengan role dasar admin/member |
+| Kategori default | Set "Makan", "Transport", dst | Set "Operasional", "Gaji Karyawan", dst |
+| Wallet | Tidak ada penanda tipe | Bisa ditandai "bisnis" vs "operasional" (kategorisasi sederhana, bukan chart of accounts — Technical Notes Section 4.3 Blueprint) |
+| Switch tipe Workspace | **Tidak tersedia di kedua tipe** — tipe dikunci setelah Workspace dibuat (Acceptance Criteria Section 4.1 Blueprint) |
+
+**Prinsip yang berlaku di semua baris tabel ini:** ketika sebuah fitur tidak relevan untuk suatu tipe Workspace, dia **tidak ada** di UI tipe itu — bukan ada tapi non-aktif. Ini mencegah kebingungan user ("kenapa saya tidak bisa klik ini?") dan juga mencegah pertanyaan salah arah ke tim support/QA saat testing.
+
+---
+
+## 9.5 Kedalaman Navigasi (berapa klik untuk sampai)
+
+| Tujuan | Dari Calendar (landing page) |
+|---|---|
+| Tambah transaksi baru | 1 klik (langsung dari `DayDetailPanel` saat tanggal diklik) |
+| Lihat detail Wallet tertentu | 2 klik (sidebar Wallet → pilih Wallet) |
+| Tanya AI Copilot | 1 klik (floating button, dari halaman mana pun) |
+| Undang anggota Business | 3 klik (sidebar Workspace → Members → Invite) — ini disengaja lebih dalam karena bukan aksi harian |
+
+**Prinsip kedalaman:** aksi yang dilakukan **harian** (tambah transaksi, tanya AI) harus di permukaan (1 klik). Aksi **sesekali** (undang anggota, ubah settings Workspace) boleh lebih dalam — ini konsisten dengan filosofi Calendar sebagai tempat kerja harian, bukan hanya salah satu halaman di antara banyak halaman setara.
+
+---
+
+## 9.6 Yang Sengaja Tidak Ada di IA Ini
+
+Konsisten dengan Scope Boundary (07. PRD): tidak ada entri navigasi untuk Dashboard, CSV Import, atau Email Reminder — bukan karena terlupa, tapi karena eksplisit ditunda ke fase berikutnya. Menambahkan entri sidebar untuk fitur yang belum ada berisiko membingungkan (link mati atau placeholder "coming soon" yang mengganggu kepadatan sidebar untuk fitur yang justru sudah jalan).
+
+---
+
+## Dokumen Terkait
+
+| Dokumen | Isi |
+|---|---|
+| 07. PRD | Scope fitur, kategori default per tipe Workspace |
+| 08. User Flow | Alur onboarding dan interaksi harian yang menghasilkan struktur IA ini |
+| 14. Frontend Specification | Implementasi komponen sidebar dan routing |
+| 16. System Design | Skema `WorkspaceMember` dan `Category` yang mendasari visibility di 9.4 |
