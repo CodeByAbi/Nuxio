@@ -38,6 +38,10 @@ prisma/migrations/
 # Supabase
 .supabase/
 
+# Agent configuration 
+AGENTS.md
+CLAUDE.md
+
 # IDE - VS Code
 .vscode/
 !.vscode/extensions.json
