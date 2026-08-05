@@ -42,6 +42,9 @@ prisma/migrations/
 AGENTS.md
 CLAUDE.md
 
+# CodeGraph
+.codegraph/
+
 # IDE - VS Code
 .vscode/
 !.vscode/extensions.json

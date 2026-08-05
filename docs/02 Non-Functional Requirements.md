@@ -2,9 +2,9 @@
 
 **Document owner:** Engineering (Quality & Architecture)
 **Status:** Approved baseline for MVP build
-**Rujukan utama:** `07 PRD.md`, `02 Architecture Decisions.md`
+**Rujukan utama:** `04. PRD.md`, `03. Architecture Decisions.md`
 
-> **Catatan penyelarasan tooling.** Baseline teknologi pada brief dokumen ini menyebut Supabase Client/Server Client, Supabase CLI Migration, dan Row Level Security (RLS) sebagai bagian stack database. `02 Architecture Decisions.md` Section 5 telah mengunci **Prisma** sebagai ORM dan alat migrasi di atas PostgreSQL yang dihosting Supabase. Dokumen ini mengikuti keputusan ADR tersebut sebagai primary data access layer, dan memperlakukan **RLS sebagai lapisan defense-in-depth tambahan** di atasnya (Section 5.3) — bukan pengganti validasi `workspace_id` di service layer. Supabase Client/Server Client dipakai untuk Auth session handling dan Storage, konsisten dengan `07 PRD.md` Section 6.1 dan 6.13.
+> **Catatan penyelarasan tooling.** Stack data access final (brief, `04. PRD.md` Section 16, `05 Architecture.md` Section 5, `03. Architecture Decisions.md` Section 5): PostgreSQL yang dihosting Supabase, **SQL migration via Supabase CLI**, **Supabase Client / Server Client** sebagai jalur akses (session token user → `auth.uid()` terisi → **RLS aktif sebagai kontrol akses baris di level database**), dan **tanpa ORM** (Prisma atau lainnya). RLS adalah lapisan keamanan database (Lapisan 2) yang berjalan bersama membership check di service layer (Lapisan 1) — dua lapisan independen, bukan saling menggantikan (Product Principle #11). Service role hanya untuk background job/admin dengan scoping `workspace_id` manual.
 
 ---
 
@@ -12,13 +12,13 @@
 
 ## Purpose
 
-Dokumen ini menetapkan **standar kualitas sistem (Quality Attributes)** yang wajib dipenuhi Nuvio selama pengembangan MVP. Ia menjawab pertanyaan "seberapa cepat", "seberapa aman", "seberapa andal", dan "seberapa dapat dipelihara" — bukan "fitur apa yang dibangun" (itu domain `07 PRD.md`) atau "kenapa teknologi ini dipilih" (itu domain `02 Architecture Decisions.md`).
+Dokumen ini menetapkan **standar kualitas sistem (Quality Attributes)** yang wajib dipenuhi Nuvio selama pengembangan MVP. Ia menjawab pertanyaan "seberapa cepat", "seberapa aman", "seberapa andal", dan "seberapa dapat dipelihara" — bukan "fitur apa yang dibangun" (itu domain `04. PRD.md`) atau "kenapa teknologi ini dipilih" (itu domain `03. Architecture Decisions.md`).
 
 Untuk aplikasi financial planning, Non-Functional Requirement bukan aspirasi kualitas belaka — ia adalah bagian dari kontrak kepercayaan yang sama dengan Product Principle #1 (financial correctness) dan #5 (semua operasi finansial atomik) di PRD. Sistem yang benar secara fungsional tapi lambat, tidak konsisten, atau bocor data lintas-Workspace tetap dianggap gagal.
 
 ## Scope
 
-Dokumen ini mencakup seluruh dimensi kualitas non-fungsional MVP: performance, scalability, reliability, security, availability, maintainability, observability, accessibility, responsive design, browser support, SEO/PWA, AI quality, backup/recovery, dan testing. Ia **tidak** mencakup spesifikasi fitur (lihat `07 PRD.md`), keputusan arsitektur/teknologi (lihat `02 Architecture Decisions.md`), atau detail implementasi kode.
+Dokumen ini mencakup seluruh dimensi kualitas non-fungsional MVP: performance, scalability, reliability, security, availability, maintainability, observability, accessibility, responsive design, browser support, SEO/PWA, AI quality, backup/recovery, dan testing. Ia **tidak** mencakup spesifikasi fitur (lihat `04. PRD.md`), keputusan arsitektur/teknologi (lihat `03. Architecture Decisions.md`), atau detail implementasi kode.
 
 ## Audience
 
@@ -34,8 +34,8 @@ Dokumen ini mencakup seluruh dimensi kualitas non-fungsional MVP: performance, s
 
 ```mermaid
 flowchart TB
-    PRD["07 PRD.md\nApa yang dibangun (fitur, FR, business rule)"]
-    ADR["02 Architecture Decisions.md\nKenapa teknologi/arsitektur ini dipilih"]
+    PRD["04. PRD.md\nApa yang dibangun (fitur, FR, business rule)"]
+    ADR["03. Architecture Decisions.md\nKenapa teknologi/arsitektur ini dipilih"]
     NFR["02 Non-Functional Requirements.md\n(dokumen ini)\nSeberapa baik sistem harus berjalan"]
     IMPL["12 Backend.md, 13 API.md, 14 Frontend.md, dst\nBagaimana cara mengimplementasikan"]
 
@@ -44,27 +44,27 @@ flowchart TB
     NFR -->|menjadi acceptance gate sebelum release| IMPL
 ```
 
-Target di dokumen ini **tidak boleh bertentangan** dengan Section 17 (Performance Requirements) dan Section 16 (Security Requirements) `07 PRD.md`, maupun dengan trade-off yang sudah dikunci di `02 Architecture Decisions.md` (mis. cron alih-alih message queue, forecast snapshot alih-alih real-time compute). Di mana PRD sudah memberi angka indikatif, dokumen ini mempertajam angka tersebut menjadi target yang dapat diuji QA — tidak menggantinya.
+Target di dokumen ini **tidak boleh bertentangan** dengan Section 17 (Performance Requirements) dan Section 16 (Security Requirements) `04. PRD.md`, maupun dengan trade-off yang sudah dikunci di `03. Architecture Decisions.md` (mis. cron alih-alih message queue, forecast snapshot alih-alih real-time compute). Di mana PRD sudah memberi angka indikatif, dokumen ini mempertajam angka tersebut menjadi target yang dapat diuji QA — tidak menggantinya.
 
 ---
 
 # 2. Performance
 
-Seluruh target berikut adalah **p95** (persentil ke-95), bukan rata-rata — konsisten dengan `07 PRD.md` Section 17, dan berlaku untuk Workspace dengan volume data sesuai Data Volume Assumption (Section 3 dokumen ini). Target adalah baseline MVP realistis di atas Vercel + Supabase, dikalibrasi ulang dengan data produksi pasca-launch, bukan komitmen kontraktual.
+Seluruh target berikut adalah **p95** (persentil ke-95), bukan rata-rata — konsisten dengan `04. PRD.md` Section 17, dan berlaku untuk Workspace dengan volume data sesuai Data Volume Assumption (Section 3 dokumen ini). Target adalah baseline MVP realistis di atas Vercel + Supabase, dikalibrasi ulang dengan data produksi pasca-launch, bukan komitmen kontraktual.
 
 | Area | Target (p95) | Alasan |
 |---|---|---|
-| Initial Page Load (halaman terautentikasi) | < 2.5 detik | Selaras `07 PRD.md` Section 17. Halaman pertama yang dibuka user (biasanya Calendar) menentukan kesan performa keseluruhan produk. |
+| Initial Page Load (halaman terautentikasi) | < 2.5 detik | Selaras `04. PRD.md` Section 17. Halaman pertama yang dibuka user (biasanya Calendar) menentukan kesan performa keseluruhan produk. |
 | Time to Interactive (TTI) | < 3.5 detik | TTI diberi jeda lebih longgar dari page load karena boleh melibatkan hydration React setelah render awal — tapi tetap dibatasi agar user tidak menunggu lama sebelum bisa berinteraksi dengan Calendar/form. |
-| API Response Time (endpoint non-AI, non-agregat berat) | < 400 ms | Selaras `07 PRD.md` Section 17. Berlaku untuk operasi CRUD sederhana (Wallet, Category, Transaction single-record). |
+| API Response Time (endpoint non-AI, non-agregat berat) | < 400 ms | Selaras `04. PRD.md` Section 17. Berlaku untuk operasi CRUD sederhana (Wallet, Category, Transaction single-record). |
 | Dashboard Rendering (Calendar sebagai halaman utama) | < 1.5 detik | Calendar adalah Dashboard produk (Product Principle #2 PRD) — performa render-nya adalah performa produk secara keseluruhan di mata user. |
-| Calendar Rendering (navigasi antar bulan, <100 entitas/bulan) | < 1.5 detik | Selaras `07 PRD.md` Section 17. Volume di atas 100 entitas/bulan mengaktifkan strategi ringkasan "+N lainnya" (Section 6.8 PRD) agar layout dan performa tetap terjaga. |
-| Forecast Generation (background job per Workspace) | < 10 detik | Selaras `07 PRD.md` Section 17. Ini adalah proses background asinkron (Section 9 ADR) — target ini bukan latency yang dirasakan user secara langsung, melainkan batas durasi job agar tidak melebihi jendela waktu cron harian. |
-| Forecast Snapshot Read (dari snapshot tersimpan, bukan recompute) | < 500 ms | Selaras `07 PRD.md` Section 17. Ini yang dirasakan user saat membuka overlay Forecast di Calendar — harus terasa instan karena hanya membaca data tersimpan. |
-| AI Response Time (first response Chat) | < 4 detik | Selaras `07 PRD.md` Section 17, tergantung latensi Gemini 2.5 Flash. Lihat Section 13 untuk target detail AI. |
+| Calendar Rendering (navigasi antar bulan, <100 entitas/bulan) | < 1.5 detik | Selaras `04. PRD.md` Section 17. Volume di atas 100 entitas/bulan mengaktifkan strategi ringkasan "+N lainnya" (Section 6.8 PRD) agar layout dan performa tetap terjaga. |
+| Forecast Generation (background job per Workspace) | < 10 detik | Selaras `04. PRD.md` Section 17. Ini adalah proses background asinkron (Section 9 ADR) — target ini bukan latency yang dirasakan user secara langsung, melainkan batas durasi job agar tidak melebihi jendela waktu cron harian. |
+| Forecast Snapshot Read (dari snapshot tersimpan, bukan recompute) | < 500 ms | Selaras `04. PRD.md` Section 17. Ini yang dirasakan user saat membuka overlay Forecast di Calendar — harus terasa instan karena hanya membaca data tersimpan. |
+| AI Response Time (first response Chat) | < 4 detik | Selaras `04. PRD.md` Section 17, tergantung latensi Gemini 2.5 Flash. Lihat Section 13 untuk target detail AI. |
 | File Upload (avatar profil via Supabase Storage) | < 3 detik untuk file ≤ 2 MB | Kebutuhan upload di MVP minor (hanya avatar, Section 6.15 PRD) — target ini cukup untuk UX yang wajar tanpa perlu infrastruktur upload chunked/resumable. |
 | Search (filter Transaction/Category berdasarkan keyword) | < 600 ms | Search di MVP beroperasi pada data yang sudah di-scope ke satu Workspace (skala data kecil-menengah, Section 3) — cukup dengan query terindeks tanpa search engine terpisah (Elasticsearch dsb dianggap over-engineering untuk MVP). |
-| Pagination (load halaman berikutnya — Transaction list, Notification history) | < 500 ms per halaman | Selaras strategi pagination di `02 Architecture Decisions.md` Section 12 — setiap halaman data harus terasa instan karena ukuran page dibatasi (lihat Section 3). |
+| Pagination (load halaman berikutnya — Transaction list, Notification history) | < 500 ms per halaman | Selaras strategi pagination di `03. Architecture Decisions.md` Section 12 — setiap halaman data harus terasa instan karena ukuran page dibatasi (lihat Section 3). |
 
 **Prinsip pengukuran:** target performa diuji pada kondisi data mengikuti Data Volume Assumption (Section 3), bukan dataset kosong yang tidak representatif maupun dataset ekstrem di luar asumsi MVP.
 
@@ -72,19 +72,19 @@ Seluruh target berikut adalah **p95** (persentil ke-95), bukan rata-rata — kon
 
 # 3. Scalability
 
-Target berikut adalah **batas desain MVP** — dipakai untuk keputusan indexing, pagination, dan UI (bukan hard block keras yang memunculkan error ke user kecuali dinyatakan eksplisit). Berbasis Data Volume Assumption `07 PRD.md` Section 17, dipertajam menjadi angka konkret yang dapat diuji.
+Target berikut adalah **batas desain MVP** — dipakai untuk keputusan indexing, pagination, dan UI (bukan hard block keras yang memunculkan error ke user kecuali dinyatakan eksplisit). Berbasis Data Volume Assumption `04. PRD.md` Section 17, dipertajam menjadi angka konkret yang dapat diuji.
 
 | Dimensi | Target Desain MVP | Asumsi & Catatan |
 |---|---|---|
 | Maximum Workspace per user | 1 Personal + hingga 10 Business (soft target) | Personal Workspace dibatasi keras di 1 (FR-011). Business Workspace tidak dibatasi keras oleh sistem — 10 adalah asumsi desain UI switcher (dropdown tetap nyaman dipakai) dan bukan validasi block; jika terlampaui, switcher beralih ke mode scroll/search, bukan menolak pembuatan Workspace baru. |
 | Maximum Wallet per Workspace | Desain untuk 2-10, diuji hingga 20 | Data Volume Assumption PRD: 2-5 tipikal. Diberi headroom hingga 20 agar Business Workspace dengan kebutuhan lebih besar tidak langsung terdegradasi performanya. Tidak ada hard limit — melebihi 20 hanya berarti daftar Wallet mulai butuh scroll, bukan ditolak. |
 | Maximum Category per Workspace | Desain untuk hingga 50 (default + custom) | Kategori default (Section 6.4 PRD) + custom user. 50 kategori jauh melebihi kebutuhan realistis personal/small business, dipakai sebagai batas atas untuk validasi UI picker (searchable, bukan dropdown polos, di atas ~20 item). |
-| Maximum Transaction per Workspace | Diuji hingga 10.000 baris kumulatif (≈3 tahun pada 300/bulan) | Data Volume Assumption PRD: 50-300/bulan. Index composite `(wallet_id, transaction_date)` (`10 Database.md` 10.3) dan pagination (Section 2) dirancang agar performa tidak terdegradasi signifikan hingga volume ini. Tidak ada hard cap — soft delete tetap menyimpan histori penuh (Product Principle terkait audit). |
+| Maximum Transaction per Workspace | Diuji hingga 10.000 baris kumulatif (≈3 tahun pada 300/bulan) | Data Volume Assumption PRD: 50-300/bulan. Index composite `(wallet_id, transaction_date)` (`07. Database.md` 7.6) dan pagination (Section 2) dirancang agar performa tidak terdegradasi signifikan hingga volume ini. Tidak ada hard cap — soft delete tetap menyimpan histori penuh (Product Principle terkait audit). |
 | Maximum Goal per Workspace | Desain untuk hingga 20 aktif | Goal bersifat jangka menengah/panjang (Section 6.10 PRD) — jumlah realistis per Workspace kecil. 20 adalah batas atas desain UI list, bukan validasi block. |
 | Maximum Budget per Workspace | Dibatasi natural oleh jumlah Category × 1 per bulan (unique constraint) | Business Rule Section 11 PRD: satu Budget aktif per kombinasi kategori+bulan. Dengan maksimum 50 kategori, batas atas alami adalah 50 Budget aktif per bulan per Workspace. |
 | Maximum Concurrent Session per User | Tidak dibatasi keras; dipantau, bukan diblokir | Supabase Auth mendukung multi-device session secara native (mis. user login dari laptop dan HP bersamaan) — ini adalah pola pemakaian wajar, bukan anomali. Pembatasan concurrent session eksplisit (device management, force-logout device lain) adalah fitur enterprise yang tidak dibutuhkan MVP; dicatat sebagai kandidat Future Roadmap jika kebutuhan keamanan meningkat. |
 
-**Batasan yang diterima secara sadar:** angka-angka di atas adalah target *desain*, bukan hasil load testing pada skala ribuan Workspace bersamaan — konsisten dengan `02 Architecture Decisions.md` Section 13 yang eksplisit menunda desain skala 10.000+ user ke System Design v2. Trigger migrasi ke arsitektur skala lebih besar (read replica, job queue) sudah didefinisikan di ADR Section 13, dipantau lewat metrik di Section 8 dokumen ini.
+**Batasan yang diterima secara sadar:** angka-angka di atas adalah target *desain*, bukan hasil load testing pada skala ribuan Workspace bersamaan — konsisten dengan `03. Architecture Decisions.md` Section 13 yang eksplisit menunda desain skala 10.000+ user ke System Design v2. Trigger migrasi ke arsitektur skala lebih besar (read replica, job queue) sudah didefinisikan di ADR Section 13, dipantau lewat metrik di Section 8 dokumen ini.
 
 ---
 
@@ -92,7 +92,7 @@ Target berikut adalah **batas desain MVP** — dipakai untuk keputusan indexing,
 
 ## Error Recovery
 
-Setiap error yang terjadi di lapisan API mengikuti taksonomi error `07 PRD.md` Section 14 — klasifikasi jelas (ValidationError, AuthorizationError, DomainRuleError, dst) menentukan apakah operasi *retryable* dari sisi user. UI wajib membedakan error yang bisa diperbaiki user (retry setelah input diperbaiki) dari error infrastruktur (retry setelah jeda waktu) — pesan generik yang membingungkan user tentang apa yang harus dilakukan berikutnya dianggap cacat kualitas.
+Setiap error yang terjadi di lapisan API mengikuti taksonomi error `04. PRD.md` Section 14 — klasifikasi jelas (ValidationError, AuthorizationError, DomainRuleError, dst) menentukan apakah operasi *retryable* dari sisi user. UI wajib membedakan error yang bisa diperbaiki user (retry setelah input diperbaiki) dari error infrastruktur (retry setelah jeda waktu) — pesan generik yang membingungkan user tentang apa yang harus dilakukan berikutnya dianggap cacat kualitas.
 
 ## Retry Strategy
 
@@ -101,11 +101,11 @@ Setiap error yang terjadi di lapisan API mengikuti taksonomi error `07 PRD.md` S
 | Background job gagal (recurring generator, forecast recompute) | Retry otomatis oleh scheduler dengan backoff, dicatat di execution history (Section 8) — kegagalan tidak boleh silent-fail (FR terkait Section 6.7, 6.11 PRD). |
 | Mutasi finansial gagal di client (network error saat submit Transaction) | Tidak ada retry otomatis diam-diam untuk mutasi finansial — user diberi opsi retry eksplisit dengan data form tetap terisi (Section 6.5 PRD, Loading State). Retry otomatis diam-diam pada operasi tulis finansial berisiko duplikasi tanpa idempotency key, sehingga sengaja dihindari di client. |
 | Panggilan ke Gemini 2.5 Flash timeout/error | Satu kali retry otomatis dengan timeout lebih pendek; jika tetap gagal, fallback message ditampilkan (Section 13) — tidak mengulang berkali-kali karena AI bukan operasi kritikal. |
-| Job generator recurring dijalankan dua kali (retry platform) | Wajib idempotent lewat unique constraint `(recurringRuleId, dueDate)` di database (`02 Architecture Decisions.md` Section 10) — bukan retry yang dihindari, tapi retry yang aman dijalankan berkali-kali tanpa efek samping duplikasi. |
+| Job generator recurring dijalankan dua kali (retry platform) | Wajib idempotent lewat unique constraint `(recurringRuleId, dueDate)` di database (`03. Architecture Decisions.md` Section 10) — bukan retry yang dihindari, tapi retry yang aman dijalankan berkali-kali tanpa efek samping duplikasi. |
 
 ## Data Consistency
 
-Operasi yang mengubah lebih dari satu entitas terkait (insert Transaction + update cached balance Wallet; kedua sisi Transfer) **wajib** berada dalam satu database transaction atomik — tidak ada state antara yang terlihat oleh query lain selama proses berlangsung (Product Principle #5 PRD, `02 Architecture Decisions.md` Section 7). Kegagalan di tengah proses membatalkan seluruh operasi, bukan sebagian.
+Operasi yang mengubah lebih dari satu entitas terkait (insert Transaction + update cached balance Wallet; kedua sisi Transfer) **wajib** berada dalam satu database transaction atomik — tidak ada state antara yang terlihat oleh query lain selama proses berlangsung (Product Principle #5 PRD, `03. Architecture Decisions.md` Section 7). Kegagalan di tengah proses membatalkan seluruh operasi, bukan sebagian.
 
 Cached balance Wallet harus dapat direkonsiliasi terhadap ledger Transaction `completed` kapan saja (FR-027) — mekanisme rekonsiliasi mendeteksi dan melaporkan selisih, bukan diam-diam memperbaiki tanpa jejak audit.
 
@@ -116,7 +116,7 @@ Dua job MVP (recurring generator, forecast recompute) wajib:
 - **Tercatat di execution history** — setiap eksekusi (sukses/gagal, durasi, jumlah Workspace diproses) dicatat untuk keperluan monitoring (Section 8) dan debugging kegagalan.
 - **Terisolasi per Workspace** — kegagalan memproses satu Workspace tidak boleh menggagalkan proses seluruh batch Workspace lain dalam job yang sama.
 
-Target keberhasilan job forecast mengikuti Success Metric `07 PRD.md` Section 3: **≥ 99% forecast job success rate** — kegagalan job berdampak langsung ke kepercayaan user terhadap proyeksi, sehingga metrik ini dipantau ketat, bukan sekadar dicatat.
+Target keberhasilan job forecast mengikuti Success Metric `04. PRD.md` Section 3: **≥ 99% forecast job success rate** — kegagalan job berdampak langsung ke kepercayaan user terhadap proyeksi, sehingga metrik ini dipantau ketat, bukan sekadar dicatat.
 
 ## Forecast Recompute Reliability
 
@@ -124,13 +124,13 @@ Selaras Product Principle #7 (deterministic): forecast recompute dengan input ya
 
 ## Failure Handling
 
-Kegagalan pada satu domain module tidak boleh menyebar ke domain lain yang tidak terkait — khususnya kegagalan AI Module **tidak pernah** memengaruhi fitur finansial inti (Product Principle #3, `02 Architecture Decisions.md` Section 8). Failure di path AI Copilot ditangani sepenuhnya di dalam AI Module dan tidak pernah menggagalkan request lain yang sedang berjalan.
+Kegagalan pada satu domain module tidak boleh menyebar ke domain lain yang tidak terkait — khususnya kegagalan AI Module **tidak pernah** memengaruhi fitur finansial inti (Product Principle #3, `03. Architecture Decisions.md` Section 8). Failure di path AI Copilot ditangani sepenuhnya di dalam AI Module dan tidak pernah menggagalkan request lain yang sedang berjalan.
 
 ---
 
 # 5. Security
 
-Requirement berikut mengunci ulang `07 PRD.md` Section 16 dan `02 Architecture Decisions.md` Section 11 menjadi target yang dapat diverifikasi QA/security review sebelum release. Tidak ada requirement di sini yang boleh dilonggarkan tanpa evaluasi eksplisit — data finansial tidak punya kategori "bug keamanan minor".
+Requirement berikut mengunci ulang `04. PRD.md` Section 16 dan `03. Architecture Decisions.md` Section 11 menjadi target yang dapat diverifikasi QA/security review sebelum release. Tidak ada requirement di sini yang boleh dilonggarkan tanpa evaluasi eksplisit — data finansial tidak punya kategori "bug keamanan minor".
 
 ## Authentication
 
@@ -142,9 +142,9 @@ Pola wajib di setiap use case: `authenticated user → requested workspace → m
 
 ## Supabase Row Level Security (RLS)
 
-RLS diaktifkan pada seluruh tabel yang memuat data finansial (`wallets`, `transactions`, `categories`, `budgets`, `goals`, `calendar_events`, `forecast_snapshots`, dst) sebagai **lapisan defense-in-depth**, bukan mekanisme otorisasi primer. Policy RLS membatasi baris yang dapat diakses berdasarkan `workspace_id` yang terhubung ke membership user.
+RLS diaktifkan pada seluruh tabel yang memuat data finansial (`wallets`, `transactions`, `categories`, `budgets`, `goals`, `calendar_events`, `forecast_snapshots`, dst) sebagai **kontrol akses baris utama di level database** (Lapisan 2 — `04. PRD.md` Section 16). Policy RLS membatasi baris yang dapat diakses berdasarkan `workspace_id` yang terhubung ke membership user (`auth.uid()` vs helper `auth_workspace_ids()`).
 
-**Kenapa defense-in-depth, bukan primer:** koneksi dari service layer (Prisma) ke database berjalan dengan kredensial service role untuk mendukung agregasi lintas-Workspace yang dibutuhkan job background (forecast recompute lintas semua Workspace aktif) — RLS tidak dapat menjadi satu-satunya gerbang di jalur ini. Karena itu validasi `workspace_id` eksplisit di service layer tetap **wajib** (Section 11 ADR) sebagai kontrol primer; RLS berfungsi sebagai jaring pengaman kedua yang mencegah kebocoran data jika suatu saat ada jalur akses (mis. Supabase Client langsung dari sisi tertentu) yang secara tidak sengaja melewatkan validasi service layer.
+**Kenapa RLS primer, bukan sekadar tambahan:** seluruh request user dijalankan lewat Supabase client ber-token user sehingga RLS aktif di setiap query — isolasi baris dijamin oleh database, tidak bergantung pada disiplin filter manual di kode. Membership check di service layer (Lapisan 1) tetap **wajib** sebagai lapisan aplikasi (verifikasi role, pesan error yang benar, anti-IDOR). Jalur service role (bypass RLS) dibatasi hanya untuk background job dan operasi admin — setiap query di jalur ini **wajib** men-scope `workspace_id` secara eksplisit, karena tidak ada jaring pengaman RLS di jalur tersebut.
 
 ## Workspace Isolation
 
@@ -160,7 +160,7 @@ Empat lapisan berjenjang (Section 13 PRD, Section 11 ADR): frontend (UX cepat) �
 
 ## SQL Injection Prevention
 
-Prisma parameterized query mencegah SQL injection secara default untuk seluruh query standar. Raw SQL (dipakai terbatas untuk agregasi kompleks Forecast, Section 5 ADR) **wajib** menggunakan parameter binding — tidak pernah string concatenation/interpolation langsung dari input user ke dalam raw query. Target: code review menolak PR yang mengandung raw SQL dengan interpolasi string langsung tanpa parameter binding.
+Supabase client (PostgREST) memakai query parameterized secara default di seluruh jalur request user — aplikasi tidak menulis SQL string secara manual di jalur ini. Raw SQL (dipakai terbatas di dalam Postgres function/view untuk agregasi kompleks Forecast dan operasi atomik, dipanggil via RPC) **wajib** menggunakan parameter binding (`$1`, `$2`, dst) — tidak pernah string concatenation/interpolation langsung dari input user. Target: code review menolak PR yang mengandung raw SQL dengan interpolasi string langsung tanpa parameter binding.
 
 ## XSS Prevention
 
@@ -172,7 +172,7 @@ Endpoint yang mengubah state (POST/PUT/PATCH/DELETE) memverifikasi origin reques
 
 ## Secret Management
 
-Kredensial (Supabase service key, Gemini API key, cron secret) disimpan sebagai Vercel Environment Variable terenkripsi, tidak pernah hardcoded atau ter-commit ke repository (Section 16 PRD, Section 11 ADR). Target: `.env*` masuk `.gitignore` sejak commit pertama; scanning otomatis (mis. `git-secrets`/`trufflehog`) dijalankan sebelum rilis pertama untuk memastikan tidak ada secret historis yang bocor di riwayat git.
+Kredensial (Supabase service role key, Gemini API key, cron secret) disimpan sebagai Vercel Environment Variable terenkripsi, tidak pernah hardcoded atau ter-commit ke repository (Section 16 PRD, Section 11 ADR). Target: `.env*` masuk `.gitignore` sejak commit pertama; scanning otomatis (mis. `git-secrets`/`trufflehog`) dijalankan sebelum rilis pertama untuk memastikan tidak ada secret historis yang bocor di riwayat git.
 
 ## Rate Limiting
 
@@ -210,11 +210,11 @@ MVP tidak menargetkan SLA enterprise formal — target berikut adalah standar op
 
 ## Modular Architecture
 
-Kode diorganisasi per domain module (bukan per jenis teknis) mengikuti keputusan Modular Monolith + Clean Architecture (DDD-lite) di `02 Architecture Decisions.md` Section 4 dan 6. Target: business rule finansial tidak pernah ditemukan di API route handler atau komponen React — selalu di lapisan domain service, diverifikasi lewat code review checklist.
+Kode diorganisasi per domain module (bukan per jenis teknis) mengikuti keputusan Modular Monolith + Clean Architecture (DDD-lite) di `03. Architecture Decisions.md` Section 4 dan 6. Target: business rule finansial tidak pernah ditemukan di API route handler atau komponen React — selalu di lapisan domain service, diverifikasi lewat code review checklist.
 
 ## Documentation
 
-Setiap domain module memiliki dokumentasi setingkat README yang menjelaskan tanggung jawab modul dan kontrak publiknya (bukan dokumentasi API auto-generate yang tidak dibaca siapa pun). Keputusan arsitektur baru yang signifikan wajib menambah entri di `02 Architecture Decisions.md`, bukan hanya didiskusikan lisan/chat internal.
+Setiap domain module memiliki dokumentasi setingkat README yang menjelaskan tanggung jawab modul dan kontrak publiknya (bukan dokumentasi API auto-generate yang tidak dibaca siapa pun). Keputusan arsitektur baru yang signifikan wajib menambah entri di `03. Architecture Decisions.md`, bukan hanya didiskusikan lisan/chat internal.
 
 ## Code Readability
 
@@ -226,7 +226,7 @@ Refactoring dilakukan tergabung dengan pekerjaan fitur terkait (boy scout rule) 
 
 ## Technical Debt
 
-Technical debt yang disengaja (trade-off eksplisit demi kecepatan MVP, mis. cron alih-alih job queue) **wajib dicatat** di `02 Architecture Decisions.md` sebagai keputusan sadar dengan trigger migrasi yang jelas (Section 13 ADR) — bukan dibiarkan sebagai debt implisit yang baru ditemukan saat sudah menyakitkan. Technical debt yang tidak disengaja (jalan pintas darurat, workaround bug) dicatat sebagai TODO dengan referensi issue tracker, bukan komentar kode yang mudah terlupakan.
+Technical debt yang disengaja (trade-off eksplisit demi kecepatan MVP, mis. cron alih-alih job queue) **wajib dicatat** di `03. Architecture Decisions.md` sebagai keputusan sadar dengan trigger migrasi yang jelas (Section 13 ADR) — bukan dibiarkan sebagai debt implisit yang baru ditemukan saat sudah menyakitkan. Technical debt yang tidak disengaja (jalan pintas darurat, workaround bug) dicatat sebagai TODO dengan referensi issue tracker, bukan komentar kode yang mudah terlupakan.
 
 ## Dependency Management
 
@@ -265,7 +265,7 @@ Endpoint `/api/health` memverifikasi konektivitas database (`SELECT 1`) dan meng
 | Metrik | Kenapa Dipantau |
 |---|---|
 | API p95 latency per endpoint | Deteksi dini degradasi performa sebelum melanggar target Section 2 |
-| Forecast job success rate | Success Metric eksplisit `07 PRD.md` Section 3 (≥ 99%) |
+| Forecast job success rate | Success Metric eksplisit `04. PRD.md` Section 3 (≥ 99%) |
 | Recurring job success rate | Kegagalan langsung berdampak ke akurasi Calendar dan Forecast |
 | AI request volume & token cost per hari | Kontrol biaya (Section 5 ADR), deteksi anomali penggunaan |
 | AI hallucination rejection rate | Sinyal kualitas prompt/context builder — lonjakan tiba-tiba mengindikasikan regresi |
@@ -276,7 +276,7 @@ Endpoint `/api/health` memverifikasi konektivitas database (`SELECT 1`) dan meng
 
 # 9. Accessibility
 
-Target: **WCAG 2.1 Level AA** pada elemen interaktif inti (form, navigasi, Calendar) — selaras `07 PRD.md` Section 18, tanpa audit penuh terhadap seluruh permukaan aplikasi di siklus pertama.
+Target: **WCAG 2.1 Level AA** pada elemen interaktif inti (form, navigasi, Calendar) — selaras `04. PRD.md` Section 18, tanpa audit penuh terhadap seluruh permukaan aplikasi di siklus pertama.
 
 | Aspek | Requirement |
 |---|---|
@@ -286,7 +286,7 @@ Target: **WCAG 2.1 Level AA** pada elemen interaktif inti (form, navigasi, Calen
 | Color Contrast | Rasio kontras teks memenuhi AA — minimum 4.5:1 untuk teks normal, 3:1 untuk teks besar/ikon. |
 | Form Accessibility | Error validasi terhubung ke field terkait lewat `aria-describedby`, bukan hanya ditampilkan visual di dekat field. Field wajib ditandai secara semantik (`required` / `aria-required`), bukan hanya tanda bintang visual. |
 | Semantic HTML | Struktur heading logis (`h1`-`h3` berurutan), elemen native (`button`, `nav`, `table`) dipakai sesuai fungsinya alih-alih `div` dengan event handler — memastikan assistive technology dapat menginterpretasi struktur halaman tanpa bergantung sepenuhnya pada ARIA tambahan. |
-| Non-color-only Indicator | Status Budget (80%/100%), saldo negatif, dan status Goal terlambat selalu disertai teks/ikon, tidak hanya perbedaan warna (`07 PRD.md` Section 18). |
+| Non-color-only Indicator | Status Budget (80%/100%), saldo negatif, dan status Goal terlambat selalu disertai teks/ikon, tidak hanya perbedaan warna (`04. PRD.md` Section 18). |
 
 ---
 
@@ -294,7 +294,7 @@ Target: **WCAG 2.1 Level AA** pada elemen interaktif inti (form, navigasi, Calen
 
 | Breakpoint | Lebar Viewport | Target Device |
 |---|---|---|
-| Mobile | ≥ 360px hingga < 768px | Smartphone — breakpoint minimum 360px selaras `07 PRD.md` Section 18 (Responsive behaviour) |
+| Mobile | ≥ 360px hingga < 768px | Smartphone — breakpoint minimum 360px selaras `04. PRD.md` Section 18 (Responsive behaviour) |
 | Tablet | ≥ 768px hingga < 1024px | Tablet portrait/landscape kecil, browser window medium |
 | Desktop | ≥ 1024px | Laptop/desktop standar — layout penuh dengan sidebar/panel tambahan yang tidak muat di mobile |
 
@@ -336,7 +336,7 @@ Halaman publik (landing page) memiliki tag Open Graph (`og:title`, `og:descripti
 
 ## Manifest
 
-`manifest.json` PWA berisi `name`, `short_name`, `theme_color`, `background_color`, `display: standalone`, dan `start_url` yang mengarah ke Calendar (halaman utama pasca-login) — selaras keputusan Platform PWA (`07 PRD.md` Core Decisions).
+`manifest.json` PWA berisi `name`, `short_name`, `theme_color`, `background_color`, `display: standalone`, dan `start_url` yang mengarah ke Calendar (halaman utama pasca-login) — selaras keputusan Platform PWA (`04. PRD.md` Core Decisions).
 
 ## Icons
 
@@ -380,7 +380,7 @@ File di Supabase Storage (avatar profil) mengikuti mekanisme durability bawaan p
 
 ## Restore Strategy
 
-Kemampuan restore dari backup **wajib diverifikasi minimal satu kali di environment staging** sebelum go-live pertama (Launch Checklist `07 PRD.md` Section 20) — restore yang belum pernah diuji dianggap tidak dapat diandalkan sampai terbukti berhasil, bukan diasumsikan bekerja karena "seharusnya bekerja".
+Kemampuan restore dari backup **wajib diverifikasi minimal satu kali di environment staging** sebelum go-live pertama (Launch Checklist `04. PRD.md` Section 20) — restore yang belum pernah diuji dianggap tidak dapat diandalkan sampai terbukti berhasil, bukan diasumsikan bekerja karena "seharusnya bekerja".
 
 ## Recovery Objective
 
@@ -399,7 +399,7 @@ Target ini eksplisit **bukan** komitmen SLA kontraktual ke user — ini adalah t
 |---|---|---|
 | Unit Testing | Domain service (Wallet, Transaction, Budget, Goal, Forecast) ≥ 80% coverage | Business rule finansial (atomic balance, deterministic forecast, business rule Budget/Goal) adalah bagian paling kritis untuk diuji terisolasi dari infrastruktur (Definition of Done Section 20 PRD). |
 | Integration Testing | Seluruh API route finansial diuji end-to-end dengan database test nyata (bukan mock) | Selaras feedback eksplisit tim: integration test yang memock database berisiko lolos meski migrasi/query sebenarnya rusak. Wajib mencakup skenario otorisasi (akses lintas-Workspace ditolak) di setiap endpoint. |
-| End-to-End Testing | Minimal mencakup: onboarding → transaksi pertama, create/edit/delete Transaction, Transfer atomik, Budget threshold, Goal contribution, AI Copilot cold-start & normal | Skenario ini adalah jalur kritis yang disebut eksplisit di Definition of Done dan MVP Checklist `07 PRD.md` Section 20 — kegagalan di salah satunya adalah release blocker. |
+| End-to-End Testing | Minimal mencakup: onboarding → transaksi pertama, create/edit/delete Transaction, Transfer atomik, Budget threshold, Goal contribution, AI Copilot cold-start & normal | Skenario ini adalah jalur kritis yang disebut eksplisit di Definition of Done dan MVP Checklist `04. PRD.md` Section 20 — kegagalan di salah satunya adalah release blocker. |
 | Coverage Goal (keseluruhan proyek) | ≥ 65% overall, dengan domain service sebagai pengecualian target lebih tinggi (80%, lihat Unit Testing) | Target keseluruhan sengaja tidak diseragamkan tinggi di semua lapisan — kode UI presentasional murni (styling, layout) punya nilai coverage rendah yang wajar, sementara logic finansial harus jauh lebih diuji ketat. Coverage tinggi tanpa pembobotan area kritis adalah metrik kosong. |
 | Regression Testing | Suite E2E dijalankan wajib di CI sebelum merge ke `staging` dan sebelum deploy ke `production` | Mencegah fitur yang sudah bekerja (khususnya jalur finansial kritis) rusak akibat perubahan tidak terkait — regresi pada aplikasi finansial berarti hilangnya kepercayaan user, bukan sekadar bug kosmetik. |
 
@@ -413,7 +413,7 @@ Target ini eksplisit **bukan** komitmen SLA kontraktual ke user — ini adalah t
 
 # 16. Acceptance Criteria
 
-Checklist berikut dipakai QA sebagai gate sebelum release — melengkapi (bukan menggantikan) MVP Checklist dan Launch Checklist `07 PRD.md` Section 20.
+Checklist berikut dipakai QA sebagai gate sebelum release — melengkapi (bukan menggantikan) MVP Checklist dan Launch Checklist `04. PRD.md` Section 20.
 
 ## Performance
 - [ ] Initial page load terautentikasi < 2.5 detik p95
