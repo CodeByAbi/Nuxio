@@ -1,0 +1,2 @@
+# This project uses TypeScript/Next.js (Node.js) — no Python dependencies required.
+# requirements.txt is included for compatibility with tooling that expects it.
