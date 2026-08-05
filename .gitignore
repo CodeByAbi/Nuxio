@@ -3,15 +3,13 @@ node_modules/
 .pnp
 .pnp.js
 
-# Build output
-.next/
-out/
-build/
-dist/
-
 # Next.js
 .next/
 out/
+
+# Build output
+build/
+dist/
 
 # TypeScript
 *.tsbuildinfo
@@ -36,7 +34,7 @@ coverage/
 supabase/.temp/
 supabase/.branches/
 
-# Agent configuration 
+# Agent configuration
 AGENTS.md
 CLAUDE.md
 
@@ -82,12 +80,6 @@ temp/
 *.swo
 *~
 
-# Coverage (repeated for emphasis)
-coverage/
-
-# TypeScript generated files
-*.tsbuildinfo
-
 # Python (not used in this project, but included for completeness)
 __pycache__/
 *.py[cod]
@@ -101,7 +93,5 @@ venv/
 env/
 ENV/
 *.egg-info/
-dist/
-build/
 .pip/
 pip-wheel-metadata/
