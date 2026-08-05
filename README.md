@@ -104,7 +104,7 @@ CalBudget/
 
 ## 7. Environment Variables
 
-Buat `.env.local` di root (tidak pernah di-commit):
+Buat `.env.local` di root :
 
 ```bash
 # Database (Supabase PostgreSQL)
