@@ -1,8 +1,8 @@
 # Push target
 
-Always push to: https://github.com/CodeByAbi/Nuxio (origin remote, branch: main)
+Always push to: https://github.com/CodeByAbi/CalBudget (origin remote, branch: main)
 
-When the user says "push", commit pending changes and push to the origin remote (CodeByAbi/Nuxio) on main.
+When the user says "push", commit pending changes and push to the origin remote (CodeByAbi/CalBudget) on main.
 
 # Commit convention
 
