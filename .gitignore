@@ -32,11 +32,9 @@ coverage/
 # Vercel
 .vercel
 
-# Prisma
-prisma/migrations/
-
-# Supabase
-.supabase/
+# Supabase CLI (config.toml & migrations/ di-commit; hanya artefak lokal yang di-ignore)
+supabase/.temp/
+supabase/.branches/
 
 # Agent configuration 
 AGENTS.md
@@ -89,9 +87,6 @@ coverage/
 
 # TypeScript generated files
 *.tsbuildinfo
-
-# Prisma
-prisma/migrations/
 
 # Python (not used in this project, but included for completeness)
 __pycache__/
