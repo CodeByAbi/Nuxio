@@ -4,7 +4,7 @@
 
 AI di Nuvio berperan sebagai **Financial Copilot** — lapisan penjelas yang menarasikan angka yang sudah dihitung oleh domain service (Wallet, Budget, Goal, Forecast), bukan mesin hitung finansial itu sendiri.
 
-> Status: **MVP build** (tim 3 engineer, ±32 hari). Seluruh keputusan teknis terdokumentasi di `docs/`.
+> Status: **MVP build**
 
 ---
 
