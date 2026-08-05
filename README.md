@@ -1,6 +1,6 @@
 # Nuvio — AI-Powered Financial Planning Workspace
 
-**Nuvio** adalah workspace perencanaan keuangan berbasis web/PWA yang membantu personal user dan pemilik small business (1–3 anggota) merencanakan kondisi keuangan *masa depan* — bukan sekadar mencatat transaksi yang sudah terjadi. Interaksi utama terjadi di **Financial Planning Calendar**: satu tampilan yang menyatukan transaksi aktual, transaksi terjadwal, tagihan rutin, budget, goal, dan sinyal forecast dalam satu garis waktu.
+**Nuvio** adalah workspace perencanaan keuangan berbasis web/PWA yang membantu personal user dan pemilik small business yang merencanakan kondisi keuangan *masa depan* — bukan sekadar mencatat transaksi yang sudah terjadi. Interaksi utama terjadi di **Financial Planning Calendar**: satu tampilan yang menyatukan transaksi aktual, transaksi terjadwal, tagihan rutin, budget, goal, dan sinyal forecast dalam satu garis waktu.
 
 AI di Nuvio berperan sebagai **Financial Copilot** — lapisan penjelas yang menarasikan angka yang sudah dihitung oleh domain service (Wallet, Budget, Goal, Forecast), bukan mesin hitung finansial itu sendiri.
 
