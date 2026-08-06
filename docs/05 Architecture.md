@@ -384,7 +384,7 @@ Gemini diakses lewat satu interface internal (bukan SDK langsung), sehingga prov
 
 ```
 main branch     → Production   → Supabase project: nuvio-prod
-staging branch  → Staging      → Supabase project: nuvio-staging
+develop branch  → Staging      → Supabase project: nuvio-staging
 feature/*       → Preview      → Supabase project: nuvio-dev (shared)
 ```
 

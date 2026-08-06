@@ -292,7 +292,7 @@ Seluruh dokumentasi proyek ada di `docs/` — satu sumber kebenaran. Baca beruru
 2. **PR ke `develop`** — CI otomatis: lint → typecheck → unit test → build. **PR tidak bisa di-merge jika CI gagal** (branch protection wajib CI hijau).
 3. **`develop`** auto-deploy (Vercel preview) setelah CI passing; QA dijalankan di sini sebelum PR terpisah `develop → main`.
 4. **Production** hanya melalui manual deploy setelah review (≥1 reviewer) dan QA.
-5. **Perubahan schema DB** wajib menyertakan migration Prisma + verifikasi di staging.
+5. **Perubahan schema DB** wajib menyertakan migration Supabase CLI (SQL) + verifikasi di environment staging (branch `develop`).
 6. **Commit convention:** conventional commits (`feat:`, `fix:`, `refactor:`, `docs:`, `test:`, `chore:`).
 7. Setiap perubahan signifikan terdokumentasikan di `docs/` yang relevan.
 
