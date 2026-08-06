@@ -104,7 +104,7 @@ CalBudget/
 
 ## 7. Environment Variables
 
-Buat `.env.local` di root :
+Buat `.env` di root (bukan `.env.local` — lihat `.env.example`):
 
 ```bash
 # Database (Supabase PostgreSQL)
@@ -135,13 +135,14 @@ cd CalBudget
 npm install
 
 # 3. Setup environment (lihat bagian Environment Variables)
-# Buat file .env.local manual mengikuti variabel di bawah, lalu isi nilainya.
+# Salin .env.example -> .env, lalu isi nilainya.
+cp .env.example .env
 
-# 4. Jalankan database lokal (PostgreSQL via Docker)
-docker compose up -d db      # atau sesuaikan dengan setup Supabase lokal
+# 4. Jalankan stack Supabase lokal (Postgres + Auth + Storage via Docker, dikelola Supabase CLI)
+supabase start
 
-# 5. Setup database
-npx prisma migrate dev
+# 5. Terapkan migration SQL yang ada ke database lokal
+supabase db reset
 
 # 6. Jalankan aplikasi
 npm run dev
@@ -155,22 +156,23 @@ npm run dev   # http://localhost:3000
 
 - **Preview deployment otomatis** untuk setiap PR (Vercel).
 - **Supabase local (opsional):** `supabase start` — atau pakai project Supabase cloud dev untuk auth & database.
-- Alur kerja harian: `feature/*` branch → PR → CI → staging → (review) → main.
+- Alur kerja harian: `feature/*` branch → PR → CI → `develop` → (review) → `main`.
 
 ## 10. Available Scripts
 
 | Script | Perintah | Fungsi |
 |---|---|---|
 | Development | `npm run dev` | Dev server (localhost:3000) |
-| Build | `npm run build` | `prisma migrate deploy && next build` — migrasi otomatis sebelum build |
+| Build | `npm run build` | `next build` — migrasi database **tidak** berjalan otomatis di build (lihat §12) |
 | Production | `npm run start` | Menjalankan build production |
 | Lint | `npm run lint` | ESLint |
-| Typecheck | `npx tsc --noEmit` | TypeScript check (dipakai CI) |
+| Typecheck | `npx tsc --noEmit` | TypeScript check (dipakai CI, dijalankan setelah build — lihat §11) |
 | Test | `npm test` | Unit + API integration test (Jest) |
 | Test + coverage | `npm test -- --coverage --passWithNoTests` | Sesuai CI |
-| Migration (dev) | `npx prisma migrate dev --name <nama>` | Buat & terapkan migration baru |
-| Migration (deploy) | `npx prisma migrate deploy` | Terapkan migration existing (staging/prod) |
-| Prisma Studio | `npx prisma studio` | Visual DB explorer |
+| Migration baru | `supabase migration new <nama>` | Buat file migrasi SQL kosong |
+| Migration (local) | `supabase db reset` | Reset DB lokal + jalankan seluruh migration dari nol |
+| Migration (push) | `supabase db push` | Terapkan migration yang belum berjalan ke target (staging/production) |
+| Supabase Studio | `supabase start` lalu buka `http://127.0.0.1:54323` | Visual DB explorer lokal |
 
 ## 11. Build & Deployment
 
@@ -179,12 +181,12 @@ Pipeline (detail di **14. DevOps**):
 ```
 Local → push → PR → CI (lint + typecheck + unit test + build)
                          ↓ passing
-              Deploy STAGING (auto, Vercel preview)
+              Deploy DEVELOP (auto, Vercel preview)
                          ↓ manual approve (1 reviewer) + QA
                   Deploy PRODUCTION (manual)
 ```
 
-- **Tiga environment terpisah:** `main` → production, `staging` → staging, `feature/*` → preview (database dev shared).
+- **Tiga environment terpisah:** `main` → production, `develop` → staging, `feature/*` → preview (database dev shared).
 - **Database benar-benar terpisah** per environment — jangan pernah pakai DB production untuk testing.
 - **Build command** menjalankan `prisma migrate deploy` sebelum `next build` — migrasi sinkron dengan deploy.
 - **Pre-deploy checklist:** CI passing, migration teruji di staging, env vars production terkonfigurasi, API key valid, Sentry DSN aktif.
@@ -192,18 +194,18 @@ Local → push → PR → CI (lint + typecheck + unit test + build)
 
 ## 12. Database & Migration
 
-- **Prisma + PostgreSQL (Supabase).** Skema lengkap: `07. Database`.
-- **Prinsip:** UUID PK di semua tabel, `workspace_id` di hampir semua tabel sejak migrasi pertama, soft-delete (`archived`) untuk Wallet/Category, `cached_balance` sebagai derived data yang di-update atomik di service layer.
+- **PostgreSQL (Supabase) — tanpa ORM.** Akses data lewat Supabase Client/Server Client dengan Row Level Security (RLS) aktif; skema dikelola SQL migration via Supabase CLI, bukan Prisma/ORM lain (keputusan final, lihat `docs/03. Architecture Decisions.md` §5). Skema lengkap: `docs/07. Database.md`.
+- **Prinsip:** UUID PK di semua tabel, `workspace_id` di hampir semua tabel sejak migrasi pertama, soft-delete (`archived`) untuk Wallet/Category/Transaction, `cached_balance` sebagai derived data yang di-update atomik lewat Postgres function (RPC).
 - **Entitas utama:** `workspaces`, `workspace_members`, `wallets`, `categories`, `transactions`, `budgets`, `goals`, `calendar_events`, `forecast_snapshots`, `recurring_rules`.
 - **Aturan migrasi:**
-  - Setiap PR yang mengubah schema wajib menyertakan migration Prisma.
-  - Migration harus reversible; rollback ditulis di PR description.
-  - Staging dulu, production kemudian.
-  - Tidak ada rename/drop kolom yang masih dipakai tanpa koordinasi eksplisit.
+  - Setiap perubahan skema = satu file SQL migration baru di `supabase/migrations/` dalam PR, menyertakan DDL + RLS policy + trigger dalam migrasi yang sama.
+  - Migration harus reversible (down SQL); rollback diverifikasi minimal sekali di staging.
+  - Diterapkan ke `develop` (staging) dulu via `supabase db push`, production kemudian setelah QA.
+  - Tidak ada rename/drop kolom yang masih dipakai tanpa deprecation eksplisit; tidak ada migration yang diedit setelah pernah di-`push`.
 
 ```bash
-npx prisma migrate dev --name add_budget_table   # development
-npx prisma migrate deploy                         # staging/production
+supabase migration new add_budget_table   # buat file migrasi baru
+supabase db push                          # terapkan ke database target (local/staging/production)
 ```
 
 ## 13. Authentication
@@ -286,9 +288,9 @@ Seluruh dokumentasi proyek ada di `docs/` — satu sumber kebenaran. Baca beruru
 
 ## 18. Development Workflow
 
-1. **Branch:** kerja di `feature/*` (dari `main`).
-2. **PR ke `staging`** (atau `main` sesuai konvensi tim) — CI otomatis: lint → typecheck → unit test → build. **PR tidak bisa di-merge jika CI gagal.**
-3. **Staging** auto-deploy setelah CI passing; QA dijalankan di sini.
+1. **Branch:** kerja di `feature/*` (dari `develop`).
+2. **PR ke `develop`** — CI otomatis: lint → typecheck → unit test → build. **PR tidak bisa di-merge jika CI gagal** (branch protection wajib CI hijau).
+3. **`develop`** auto-deploy (Vercel preview) setelah CI passing; QA dijalankan di sini sebelum PR terpisah `develop → main`.
 4. **Production** hanya melalui manual deploy setelah review (≥1 reviewer) dan QA.
 5. **Perubahan schema DB** wajib menyertakan migration Prisma + verifikasi di staging.
 6. **Commit convention:** conventional commits (`feat:`, `fix:`, `refactor:`, `docs:`, `test:`, `chore:`).
