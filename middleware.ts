@@ -1,6 +1,7 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 
+import { getRequiredEnv } from "@/lib/server/shared/env";
 import type { Database } from "@/types/database";
 
 /**
@@ -10,10 +11,10 @@ import type { Database } from "@/types/database";
  * cookies via `NextRequest`/`NextResponse`, not the `next/headers`
  * `cookies()` API that Route Handlers and Server Components use.
  */
-export async function middleware(request: NextRequest) {
+export async function middleware(request: NextRequest): Promise<NextResponse> {
   let response = NextResponse.next({ request });
 
-  const supabase = createServerClient<Database>(process.env.SUPABASE_URL!, process.env.SUPABASE_ANON_KEY!, {
+  const supabase = createServerClient<Database>(getRequiredEnv("SUPABASE_URL"), getRequiredEnv("SUPABASE_ANON_KEY"), {
     cookies: {
       getAll() {
         return request.cookies.getAll();

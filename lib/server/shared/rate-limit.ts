@@ -3,7 +3,9 @@
  * and single-instance deployments. Per ADR/Phase 7 plan this is swapped for
  * a Redis-backed implementation behind the same `rateLimit` signature once
  * running multi-instance, since a `Map` is per-process and won't coordinate
- * across serverless instances.
+ * across serverless instances. The signature is `async` from the start (even
+ * though the in-memory path never awaits anything) so a Redis-backed
+ * implementation is a true drop-in — callers already `await` it.
  */
 
 export interface RateLimitResult {
@@ -20,13 +22,29 @@ interface WindowEntry {
 
 const store = new Map<string, WindowEntry>();
 
+/** Chance per call to sweep the whole store for expired entries, so memory
+ * doesn't grow unbounded from keys (e.g. per-IP) that are never hit again. */
+const SWEEP_PROBABILITY = 0.01;
+
+function sweepExpired(now: number): void {
+  for (const [key, entry] of store) {
+    if (entry.resetAt <= now) {
+      store.delete(key);
+    }
+  }
+}
+
 /**
  * @param key Identifier for the caller being limited (e.g. `user:${userId}` or `ip:${ip}`).
  * @param limit Max requests allowed per window.
  * @param windowMs Window size in milliseconds.
  */
-export function rateLimit(key: string, limit: number, windowMs: number): RateLimitResult {
+export async function rateLimit(key: string, limit: number, windowMs: number): Promise<RateLimitResult> {
   const now = Date.now();
+  if (Math.random() < SWEEP_PROBABILITY) {
+    sweepExpired(now);
+  }
+
   const entry = store.get(key);
 
   if (!entry || entry.resetAt <= now) {
