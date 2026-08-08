@@ -1,32 +1,32 @@
-# Nuvio — Architecture Document
+# Nuxio — Architecture Document
 
 **Status:** Draft for MVP build
 **Companion to:** `06_PRD.md` (single source of truth untuk requirement)
-**Scope:** Keputusan arsitektur teknis, struktur sistem, dan pola implementasi. Dokumen ini menjelaskan *bagaimana* Nuvio dibangun; PRD menjelaskan *apa* yang dibangun.
+**Scope:** Keputusan arsitektur teknis, struktur sistem, dan pola implementasi. Dokumen ini menjelaskan _bagaimana_ Nuxio dibangun; PRD menjelaskan _apa_ yang dibangun.
 
-> Prinsip pembacaan: setiap keputusan di dokumen ini mengacu ke Product Principle di PRD Section 5. Jika ada konflik antara dokumen ini dan PRD, PRD menang untuk *requirement*, dokumen ini menang untuk *cara implementasi*.
+> Prinsip pembacaan: setiap keputusan di dokumen ini mengacu ke Product Principle di PRD Section 5. Jika ada konflik antara dokumen ini dan PRD, PRD menang untuk _requirement_, dokumen ini menang untuk _cara implementasi_.
 
 ---
 
 ## 1. Ringkasan Arsitektur
 
-Nuvio adalah **modular monolith** di atas Next.js, dideploy ke Vercel, dengan Supabase (PostgreSQL + Auth) sebagai fondasi data dan identitas. AI Copilot memakai Gemini 2.5 Flash sebagai lapisan narasi di atas domain service yang deterministik.
+Nuxio adalah **modular monolith** di atas Next.js, dideploy ke Vercel, dengan Supabase (PostgreSQL + Auth) sebagai fondasi data dan identitas. AI Copilot memakai Gemini 2.5 Flash sebagai lapisan narasi di atas domain service yang deterministik.
 
 Keputusan arsitektur terbesar dan alasannya:
 
-| Keputusan | Pilihan | Alasan singkat |
-|---|---|---|
-| Bentuk aplikasi | Modular monolith | Realistis untuk 3 engineer / 32 hari; hindari overhead microservice (TG-01) |
-| Framework | Next.js (App Router) + TypeScript | SSR untuk first-load Calendar; satu bahasa untuk FE+BE |
-| Database | Supabase PostgreSQL | Data finansial sangat relasional; butuh integritas foreign key |
-| Auth | Supabase Auth | Tidak membangun auth kustom; nyambung langsung ke RLS |
-| Isolasi data | Dua lapisan: app membership check + RLS | Defense in depth (Product Principle #11) |
-| Akses DB (request user) | Supabase client dengan session token user | `auth.uid()` terisi → RLS aktif otomatis |
-| Akses DB (background job) | Service role, scoped manual per workspace | Job tidak punya konteks user |
-| Uang | Integer minor unit | Tidak ada floating point (Product Principle #6) |
-| Forecast | Rule-based, deterministik, snapshot | Bukan ML; reproducible (Product Principle #7) |
-| Background job | Vercel Cron | Cukup untuk skala MVP; hindari infra queue |
-| AI | Gemini 2.5 Flash via provider abstraction | Read-only, narasi di atas angka final (Product Principle #3, #8) |
+| Keputusan                 | Pilihan                                   | Alasan singkat                                                              |
+| ------------------------- | ----------------------------------------- | --------------------------------------------------------------------------- |
+| Bentuk aplikasi           | Modular monolith                          | Realistis untuk 3 engineer / 32 hari; hindari overhead microservice (TG-01) |
+| Framework                 | Next.js (App Router) + TypeScript         | SSR untuk first-load Calendar; satu bahasa untuk FE+BE                      |
+| Database                  | Supabase PostgreSQL                       | Data finansial sangat relasional; butuh integritas foreign key              |
+| Auth                      | Supabase Auth                             | Tidak membangun auth kustom; nyambung langsung ke RLS                       |
+| Isolasi data              | Dua lapisan: app membership check + RLS   | Defense in depth (Product Principle #11)                                    |
+| Akses DB (request user)   | Supabase client dengan session token user | `auth.uid()` terisi → RLS aktif otomatis                                    |
+| Akses DB (background job) | Service role, scoped manual per workspace | Job tidak punya konteks user                                                |
+| Uang                      | Integer minor unit                        | Tidak ada floating point (Product Principle #6)                             |
+| Forecast                  | Rule-based, deterministik, snapshot       | Bukan ML; reproducible (Product Principle #7)                               |
+| Background job            | Vercel Cron                               | Cukup untuk skala MVP; hindari infra queue                                  |
+| AI                        | Gemini 2.5 Flash via provider abstraction | Read-only, narasi di atas angka final (Product Principle #3, #8)            |
 
 ---
 
@@ -78,7 +78,7 @@ Keputusan arsitektur terbesar dan alasannya:
 
 ## 3. Layered Architecture
 
-Nuvio memisahkan tanggung jawab menjadi empat lapisan. Aturan emas: **lapisan atas boleh memanggil lapisan bawah, tidak sebaliknya.**
+Nuxio memisahkan tanggung jawab menjadi empat lapisan. Aturan emas: **lapisan atas boleh memanggil lapisan bawah, tidak sebaliknya.**
 
 ```
 ┌─────────────────────────────────────────────────────┐
@@ -153,11 +153,11 @@ Setiap request user melewati guard yang memverifikasi: apakah user ini member da
 ```typescript
 // Pseudo-pattern — membership check di setiap API route / server action
 async function requireWorkspaceAccess(workspaceId: string) {
-  const user = await getAuthenticatedUser();          // dari Supabase session
+  const user = await getAuthenticatedUser(); // dari Supabase session
   if (!user) throw new UnauthorizedError();
 
   const membership = await getMembership(user.id, workspaceId);
-  if (!membership) throw new ForbiddenError();         // 403, bukan 404 detail
+  if (!membership) throw new ForbiddenError(); // 403, bukan 404 detail
 
   return { user, membership };
 }
@@ -242,6 +242,7 @@ Dua jenis operasi berjalan **tanpa konteks user**, jadi `auth.uid()` kosong dan 
 2. **Operasi admin sistem** — mis. migrasi, seeding kategori default.
 
 **Aturan wajib saat memakai service role:**
+
 - Setiap query **wajib** menyertakan `workspace_id` eksplisit — karena RLS tidak melindungi jalur ini.
 - Service role key **tidak pernah** sampai ke client.
 - Service role **dilarang** dipakai untuk melayani request user biasa (itu mematikan RLS untuk seluruh jalur user → melanggar Product Principle #11).
@@ -250,20 +251,20 @@ Dua jenis operasi berjalan **tanpa konteks user**, jadi `auth.uid()` kosong dan 
 // Background job — service role, WAJIB scope workspace_id manual
 async function generateOccurrencesForWorkspace(workspaceId: string) {
   const rules = await serviceRoleClient
-    .from('recurring_rules')
-    .select('*')
-    .eq('workspace_id', workspaceId)      // ← wajib, RLS tidak menjaga di sini
-    .eq('is_active', true);
+    .from("recurring_rules")
+    .select("*")
+    .eq("workspace_id", workspaceId) // ← wajib, RLS tidak menjaga di sini
+    .eq("is_active", true);
   // ... generate occurrences (idempotent, lihat Section 7)
 }
 ```
 
 ### 5.4 Ringkasan Jalur Akses
 
-| Jalur | Client | RLS aktif? | Cara isolasi |
-|---|---|---|---|
-| Request user (CRUD normal) | Supabase client + session token | ✅ Ya | app membership check + RLS |
-| Background job | Service role | ❌ Bypass sadar | scoping `workspace_id` manual di kode |
+| Jalur                              | Client                                | RLS aktif?      | Cara isolasi                          |
+| ---------------------------------- | ------------------------------------- | --------------- | ------------------------------------- |
+| Request user (CRUD normal)         | Supabase client + session token       | ✅ Ya           | app membership check + RLS            |
+| Background job                     | Service role                          | ❌ Bypass sadar | scoping `workspace_id` manual di kode |
 | Query agregasi kompleks (Forecast) | Service role atau parameterized query | ❌ Bypass sadar | scoping `workspace_id` manual di kode |
 
 ---
@@ -337,7 +338,7 @@ Dua job berjalan via Vercel Cron. Keduanya memakai service role dan men-scope pe
 ### 7.1 Recurring Occurrence Generator
 
 - **Jadwal:** harian.
-- **Tugas:** untuk setiap recurring rule aktif, generate occurrence sebagai *planned Transaction* untuk periode mendatang.
+- **Tugas:** untuk setiap recurring rule aktif, generate occurrence sebagai _planned Transaction_ untuk periode mendatang.
 - **Idempotency:** wajib. Job bisa retry (Vercel bisa memanggil dua kali). Gunakan idempotency key + unique constraint `(recurring_rule_id, due_date)` di level database — bukan hanya cek di kode.
 - **Edge case tanggal:** tanggal 29–31 di bulan yang lebih pendek → mundur ke hari terakhir bulan tersebut. Tahun kabisat untuk 29 Februari. Ini wajib punya unit test sebelum fitur lain bergantung padanya.
 
@@ -383,9 +384,9 @@ Gemini diakses lewat satu interface internal (bukan SDK langsung), sehingga prov
 ### 9.1 Tiga Environment Terpisah
 
 ```
-main branch     → Production   → Supabase project: nuvio-prod
-staging branch  → Staging      → Supabase project: nuvio-staging
-feature/*       → Preview      → Supabase project: nuvio-dev (shared)
+main branch     → Production   → Supabase project: nuxio-prod
+staging branch  → Staging      → Supabase project: nuxio-staging
+feature/*       → Preview      → Supabase project: nuxio-dev (shared)
 ```
 
 Database production, staging, dan dev adalah **project Supabase yang benar-benar terpisah**. Jangan pernah menguji fitur di database berisi data user asli.
@@ -394,12 +395,12 @@ Database production, staging, dan dev adalah **project Supabase yang benar-benar
 
 Semua kredensial (Supabase URL, anon key, **service role key**, Gemini API key) disimpan sebagai environment variable di Vercel — tidak pernah hardcode atau ter-commit ke git. Service role key hanya dipakai di server-side (background job, operasi admin), tidak pernah sampai ke bundle client.
 
-| Secret | Dipakai di | Boleh ke client? |
-|---|---|---|
-| `SUPABASE_URL` | server + client | Ya (public) |
-| `SUPABASE_ANON_KEY` | client (request user) | Ya — RLS yang menjaga |
-| `SUPABASE_SERVICE_ROLE_KEY` | server saja (job/admin) | **Tidak pernah** |
-| `GEMINI_API_KEY` | server saja | **Tidak pernah** |
+| Secret                      | Dipakai di              | Boleh ke client?      |
+| --------------------------- | ----------------------- | --------------------- |
+| `SUPABASE_URL`              | server + client         | Ya (public)           |
+| `SUPABASE_ANON_KEY`         | client (request user)   | Ya — RLS yang menjaga |
+| `SUPABASE_SERVICE_ROLE_KEY` | server saja (job/admin) | **Tidak pernah**      |
+| `GEMINI_API_KEY`            | server saja             | **Tidak pernah**      |
 
 Catatan penting: `anon key` aman berada di client **justru karena RLS aktif** — tanpa RLS, anon key di client akan jadi lubang keamanan. Ini alasan lain kenapa RLS wajib, bukan opsional.
 
@@ -425,16 +426,16 @@ Catatan penting: `anon key` aman berada di client **justru karena RLS aktif** �
 
 Tabel rujukan cepat: setiap keputusan arsitektur besar berakar di prinsip produk PRD.
 
-| Keputusan arsitektur | Product Principle (PRD §5) |
-|---|---|
-| Domain service independen dari AI | #2 (Calendar pusat), #3 (AI bukan sumber kebenaran) |
-| AI read-only, tanpa tool-call | #3, #8 (AI hanya membaca) |
-| Semua tabel punya `workspace_id` | #4 (semua data di Workspace) |
-| Mutasi finansial dalam satu DB transaction | #5 (operasi atomik) |
-| Integer minor unit untuk uang | #6 (tidak ada floating point) |
-| Forecast rule-based deterministik + snapshot | #7 (Forecast deterministic) |
-| Dua lapisan isolasi (app + RLS) | #9 (isolasi di setiap layer), #11 (defense in depth) |
-| Modular monolith, Vercel Cron | #10 (jangan over-engineering) |
+| Keputusan arsitektur                         | Product Principle (PRD §5)                           |
+| -------------------------------------------- | ---------------------------------------------------- |
+| Domain service independen dari AI            | #2 (Calendar pusat), #3 (AI bukan sumber kebenaran)  |
+| AI read-only, tanpa tool-call                | #3, #8 (AI hanya membaca)                            |
+| Semua tabel punya `workspace_id`             | #4 (semua data di Workspace)                         |
+| Mutasi finansial dalam satu DB transaction   | #5 (operasi atomik)                                  |
+| Integer minor unit untuk uang                | #6 (tidak ada floating point)                        |
+| Forecast rule-based deterministik + snapshot | #7 (Forecast deterministic)                          |
+| Dua lapisan isolasi (app + RLS)              | #9 (isolasi di setiap layer), #11 (defense in depth) |
+| Modular monolith, Vercel Cron                | #10 (jangan over-engineering)                        |
 
 ---
 

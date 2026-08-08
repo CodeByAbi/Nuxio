@@ -1,5 +1,10 @@
 jest.mock("@/lib/server/shared/logger", () => ({
-  childLogger: jest.fn(() => ({ error: jest.fn(), warn: jest.fn(), info: jest.fn(), debug: jest.fn() })),
+  childLogger: jest.fn(() => ({
+    error: jest.fn(),
+    warn: jest.fn(),
+    info: jest.fn(),
+    debug: jest.fn(),
+  })),
 }));
 
 jest.mock("@/lib/server/shared/supabase-admin-client", () => ({
@@ -18,7 +23,9 @@ describe("GET /api/health", () => {
 
   it("returns 200 with an ok envelope when Supabase is reachable", async () => {
     mockedCreateSupabaseAdminClient.mockReturnValue({
-      auth: { admin: { listUsers: jest.fn().mockResolvedValue({ data: { users: [] }, error: null }) } },
+      auth: {
+        admin: { listUsers: jest.fn().mockResolvedValue({ data: { users: [] }, error: null }) },
+      },
     });
 
     const response = await GET();
@@ -34,7 +41,11 @@ describe("GET /api/health", () => {
   it("returns 503 when Supabase reports an error", async () => {
     mockedCreateSupabaseAdminClient.mockReturnValue({
       auth: {
-        admin: { listUsers: jest.fn().mockResolvedValue({ data: null, error: new Error("connection refused") }) },
+        admin: {
+          listUsers: jest
+            .fn()
+            .mockResolvedValue({ data: null, error: new Error("connection refused") }),
+        },
       },
     });
 
