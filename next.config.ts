@@ -13,9 +13,7 @@ const isDev = process.env.NODE_ENV !== "production";
 const cspConnectSrc = [
   "'self'",
   "https://generativelanguage.googleapis.com",
-  ...(supabaseHost
-    ? [`https://${supabaseHost}`, `wss://${supabaseHost}`]
-    : []),
+  ...(supabaseHost ? [`https://${supabaseHost}`, `wss://${supabaseHost}`] : []),
 ].join(" ");
 
 // Supabase Storage (avatar/attachment) URLs are served from the same host as the API.
@@ -27,13 +25,9 @@ const cspImgSrc = [
 ].join(" ");
 
 // 'unsafe-eval' is required by Next.js dev (HMR/Fast Refresh) only — dropped in production.
-// 'unsafe-inline' for script/style remains until a nonce-based CSP is wired through middleware
+// 'unsafe-inline' for script/style remains until a nonce-based CSP is wired through proxy
 // (tracked as follow-up — see docs/03. Architecture Decisions.md audit notes).
-const cspScriptSrc = [
-  "'self'",
-  ...(isDev ? ["'unsafe-eval'"] : []),
-  "'unsafe-inline'",
-].join(" ");
+const cspScriptSrc = ["'self'", ...(isDev ? ["'unsafe-eval'"] : []), "'unsafe-inline'"].join(" ");
 
 const securityHeaders = [
   {
