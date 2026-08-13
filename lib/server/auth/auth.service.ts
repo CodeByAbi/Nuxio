@@ -24,7 +24,7 @@ export async function signUpWithEmail(
   password: string,
   ip: string
 ): Promise<AuthResult> {
-  const limit = rateLimit(`auth:register:${ip}`, REGISTER_LIMIT, REGISTER_WINDOW_MS);
+  const limit = await rateLimit(`auth:register:${ip}`, REGISTER_LIMIT, REGISTER_WINDOW_MS);
   if (!limit.success) {
     throw new RateLimitError("Too many registration attempts. Please try again later.");
   }
@@ -43,7 +43,7 @@ export async function signInWithEmail(
   password: string,
   ip: string
 ): Promise<AuthResult> {
-  const limit = rateLimit(`auth:login:${ip}`, LOGIN_LIMIT, LOGIN_WINDOW_MS);
+  const limit = await rateLimit(`auth:login:${ip}`, LOGIN_LIMIT, LOGIN_WINDOW_MS);
   if (!limit.success) {
     throw new RateLimitError("Too many login attempts. Please try again later.");
   }
