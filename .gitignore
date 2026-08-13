@@ -95,3 +95,6 @@ ENV/
 *.egg-info/
 .pip/
 pip-wheel-metadata/
+
+# Sentry Config File
+.env.sentry-build-plugin

@@ -2,6 +2,7 @@ import { createServerClient } from "@supabase/ssr";
 import { cookies } from "next/headers";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
+import { getRequiredEnv } from "@/lib/server/shared/env";
 import type { Database } from "@/types/database";
 
 /**
@@ -15,21 +16,25 @@ import type { Database } from "@/types/database";
 export async function createSupabaseServerClient(): Promise<SupabaseClient<Database>> {
   const cookieStore = await cookies();
 
-  return createServerClient<Database>(process.env.SUPABASE_URL!, process.env.SUPABASE_ANON_KEY!, {
-    cookies: {
-      getAll() {
-        return cookieStore.getAll();
-      },
-      setAll(cookiesToSet) {
-        try {
-          cookiesToSet.forEach(({ name, value, options }) => {
-            cookieStore.set(name, value, options);
-          });
-        } catch {
-          // Called from a Server Component, which cannot set cookies.
-          // Session refresh is instead handled by proxy.ts.
-        }
+  return createServerClient<Database>(
+    getRequiredEnv("SUPABASE_URL"),
+    getRequiredEnv("SUPABASE_ANON_KEY"),
+    {
+      cookies: {
+        getAll() {
+          return cookieStore.getAll();
+        },
+        setAll(cookiesToSet) {
+          try {
+            cookiesToSet.forEach(({ name, value, options }) => {
+              cookieStore.set(name, value, options);
+            });
+          } catch {
+            // Called from a Server Component, which cannot set cookies.
+            // Session refresh is instead handled by middleware.ts.
+          }
+        },
       },
     },
-  });
+  );
 }

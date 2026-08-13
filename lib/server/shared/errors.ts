@@ -32,10 +32,7 @@ export class AuthorizationError extends AppError {
   readonly code = ErrorCode.AUTHORIZATION_ERROR;
   readonly statusCode = 403;
 
-  constructor(
-    message = "You do not have permission to perform this action.",
-    options?: { cause?: unknown }
-  ) {
+  constructor(message = "You do not have permission to perform this action.", options?: { cause?: unknown }) {
     super(message, options);
   }
 }
@@ -57,7 +54,7 @@ export class ValidationError extends AppError {
   constructor(
     message = "The submitted data is invalid.",
     fieldErrors?: ValidationFieldError[],
-    options?: { cause?: unknown }
+    options?: { cause?: unknown },
   ) {
     super(message, options);
     this.fieldErrors = fieldErrors;
@@ -68,10 +65,7 @@ export class ConflictError extends AppError {
   readonly code = ErrorCode.CONFLICT;
   readonly statusCode = 409;
 
-  constructor(
-    message = "The request conflicts with the current state of the resource.",
-    options?: { cause?: unknown }
-  ) {
+  constructor(message = "The request conflicts with the current state of the resource.", options?: { cause?: unknown }) {
     super(message, options);
   }
 }
@@ -80,10 +74,7 @@ export class RateLimitError extends AppError {
   readonly code = ErrorCode.RATE_LIMIT_EXCEEDED;
   readonly statusCode = 429;
 
-  constructor(
-    message = "Too many requests. Please try again later.",
-    options?: { cause?: unknown }
-  ) {
+  constructor(message = "Too many requests. Please try again later.", options?: { cause?: unknown }) {
     super(message, options);
   }
 }

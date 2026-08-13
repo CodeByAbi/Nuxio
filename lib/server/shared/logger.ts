@@ -4,19 +4,40 @@ const isProduction = process.env.NODE_ENV === "production";
 
 /**
  * Redact anything that looks like a credential, wherever it appears in the
- * log object (top-level or nested under any key) — never log passwords,
- * tokens, or API/service-role keys, even by accident via a spread object.
+ * log object — never log passwords, tokens, or API/service-role keys, even
+ * by accident via a spread object. Pino's built-in `redact.paths` only
+ * matches a fixed nesting depth (e.g. `*.token` catches one level, not
+ * three), so instead we walk the whole log object recursively at any depth
+ * via the `formatters.log` hook below.
  */
-const REDACT_KEYS = ["password", "token", "key", "apiKey", "secret", "authorization", "cookie"];
-const redactPaths = REDACT_KEYS.flatMap((k) => [k, `*.${k}`, `*.*.${k}`]);
+const SENSITIVE_KEY_PATTERN = /^(password|token|key|apiKey|secret|authorization|cookie)$/i;
+
+function redactDeep(value: unknown, seen: WeakSet<object>): unknown {
+  if (Array.isArray(value)) {
+    return value.map((item) => redactDeep(item, seen));
+  }
+  if (value !== null && typeof value === "object") {
+    if (seen.has(value)) {
+      return "[Circular]";
+    }
+    seen.add(value);
+    const result: Record<string, unknown> = {};
+    for (const [key, nested] of Object.entries(value)) {
+      result[key] = SENSITIVE_KEY_PATTERN.test(key) ? "[REDACTED]" : redactDeep(nested, seen);
+    }
+    return result;
+  }
+  return value;
+}
 
 const logger = pino({
   name: "nuxio",
   level: process.env.LOG_LEVEL ?? (isProduction ? "info" : "debug"),
   timestamp: pino.stdTimeFunctions.isoTime,
-  redact: {
-    paths: redactPaths,
-    censor: "[REDACTED]",
+  formatters: {
+    log(object: Record<string, unknown>): Record<string, unknown> {
+      return redactDeep(object, new WeakSet<object>()) as Record<string, unknown>;
+    },
   },
   transport: isProduction
     ? undefined

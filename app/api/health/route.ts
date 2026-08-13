@@ -38,10 +38,7 @@ export async function GET() {
     log.error({ err }, "Health check failed: Supabase connectivity error");
     const body: ApiResponse<never> = {
       data: null,
-      error: {
-        code: ErrorCode.INTERNAL_ERROR,
-        message: "Service unhealthy: database connection failed.",
-      },
+      error: { code: ErrorCode.INTERNAL_ERROR, message: "Service unhealthy: database connection failed." },
     };
     return NextResponse.json(body, { status: 503 });
   }

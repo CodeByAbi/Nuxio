@@ -33,9 +33,7 @@ export function toMoney(value: number): Money {
     throw new ValidationError(`Money amount must be a finite number, got: ${value}`);
   }
   if (!Number.isInteger(value)) {
-    throw new ValidationError(
-      `Money amount must be an integer minor unit (no floating point), got: ${value}`
-    );
+    throw new ValidationError(`Money amount must be an integer minor unit (no floating point), got: ${value}`);
   }
   if (!Number.isSafeInteger(value)) {
     throw new ValidationError(`Money amount exceeds the safe integer range: ${value}`);
@@ -68,11 +66,7 @@ export function divide(amount: Money, divisor: number, mode: RoundingMode = "rou
   }
   const quotient = amount / divisor;
   const rounded =
-    mode === "floor"
-      ? Math.floor(quotient)
-      : mode === "ceil"
-        ? Math.ceil(quotient)
-        : Math.round(quotient);
+    mode === "floor" ? Math.floor(quotient) : mode === "ceil" ? Math.ceil(quotient) : Math.round(quotient);
   return toMoney(rounded);
 }
 

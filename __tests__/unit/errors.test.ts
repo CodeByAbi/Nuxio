@@ -41,9 +41,7 @@ describe("error taxonomy", () => {
   });
 
   it("carries fieldErrors on ValidationError", () => {
-    const err = new ValidationError("Invalid payload", [
-      { field: "amount", message: "must be positive" },
-    ]);
+    const err = new ValidationError("Invalid payload", [{ field: "amount", message: "must be positive" }]);
     expect(err.fieldErrors).toEqual([{ field: "amount", message: "must be positive" }]);
   });
 

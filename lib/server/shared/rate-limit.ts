@@ -37,8 +37,24 @@ interface WindowEntry {
 export class InMemoryRateLimiter implements RateLimiter {
   private readonly store = new Map<string, WindowEntry>();
 
+  /** Chance per call to sweep the whole store for expired entries, so memory
+   * doesn't grow unbounded from keys (e.g. per-IP) that are never hit again. */
+  private static readonly SWEEP_PROBABILITY = 0.01;
+
+  private sweepExpired(now: number): void {
+    for (const [key, entry] of this.store) {
+      if (entry.resetAt <= now) {
+        this.store.delete(key);
+      }
+    }
+  }
+
   async limit(key: string, limit: number, windowMs: number): Promise<RateLimitResult> {
     const now = Date.now();
+    if (Math.random() < InMemoryRateLimiter.SWEEP_PROBABILITY) {
+      this.sweepExpired(now);
+    }
+
     const entry = this.store.get(key);
 
     if (!entry || entry.resetAt <= now) {
