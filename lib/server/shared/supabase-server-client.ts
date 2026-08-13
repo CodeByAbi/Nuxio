@@ -31,7 +31,7 @@ export async function createSupabaseServerClient(): Promise<SupabaseClient<Datab
             });
           } catch {
             // Called from a Server Component, which cannot set cookies.
-            // Session refresh is instead handled by middleware.ts.
+            // Session refresh is instead handled by proxy.ts.
           }
         },
       },
