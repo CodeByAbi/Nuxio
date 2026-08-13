@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 110" fill="none">
+  <path
+    d="M55 5.5c2.6 0 5.1 1 7 2.9l39.6 39.6c3.9 3.9 3.9 10.2 0 14.1L61.9 101.7c-1.9 1.9-4.5 3-7.2 3h-.4c-2.6 0-5.1-1-7-2.9L7.8 62.1c-3.9-3.9-3.9-10.2 0-14.1L47.4 8.4c1.9-1.9 4.4-2.9 7-2.9H55Z"
+    fill="#0071e3"
+  />
+  <path d="M55 104.5 84 96.5 68 78 55 104.5Z" fill="#5b9bd9" />
+  <circle cx="40" cy="38" r="9" fill="#ffffff" />
+  <text
+    x="138"
+    y="76"
+    font-family="Inter, ui-sans-serif, system-ui, sans-serif"
+    font-weight="800"
+    font-size="64"
+    letter-spacing="-1"
+    fill="#0071e3"
+  >Nuxio</text>
+</svg>
