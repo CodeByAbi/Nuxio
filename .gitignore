@@ -26,6 +26,7 @@ coverage/
 .env.test.local
 .env.production.local
 .env.*.local
+.env.sentry-build-plugin
 
 # Vercel
 .vercel
