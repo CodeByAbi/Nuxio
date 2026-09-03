@@ -1,6 +1,8 @@
 import { createSupabaseServerClient } from "@/lib/server/shared/supabase-server-client";
 import { childLogger } from "@/lib/server/shared/logger";
 import { ValidationError, InternalError } from "@/lib/server/shared/errors";
+import type { SupabaseClient } from "@supabase/supabase-js";
+import type { Database } from "@/types/database";
 
 const log = childLogger("avatar-service");
 
@@ -11,25 +13,60 @@ const ALLOWED_MIME_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
 const MAX_FILE_SIZE_BYTES = 2 * 1024 * 1024;
 
 /** Signed URL expiry in seconds (1 hour). */
-const SIGNED_URL_EXPIRY_SECONDS = 60 * 60;
+export const SIGNED_URL_EXPIRY_SECONDS = 60 * 60;
+
+/** Deterministic Storage object path for a user's avatar — one object per user, ever. */
+export function avatarStoragePath(userId: string): string {
+  return `user/${userId}/avatar`;
+}
+
+/**
+ * Resolve the stable avatar path stored in `user_profiles.avatar_url` into a
+ * fresh, short-lived signed URL. Never persist the result — call this on
+ * every read instead. Returns `null` if there is no avatar, or if signing
+ * fails (e.g. the object was removed out-of-band); callers should treat both
+ * cases identically ("no avatar to show") rather than surfacing an error.
+ */
+export async function resolveAvatarUrl(
+  supabase: SupabaseClient<Database>,
+  avatarPath: string | null,
+): Promise<string | null> {
+  if (!avatarPath) return null;
+
+  const { data, error } = await supabase.storage.from("avatars").createSignedUrl(avatarPath, SIGNED_URL_EXPIRY_SECONDS);
+
+  if (error || !data?.signedUrl) {
+    log.warn({ avatarPath, err: error?.message }, "resolveAvatarUrl: failed to sign, treating as no avatar");
+    return null;
+  }
+
+  return data.signedUrl;
+}
 
 /**
  * Upload (or replace) an avatar for the given user.
  *
- * Sequence (matches spec exactly):
+ * Sequence:
  *  1. Validate MIME type against whitelist (JPEG, PNG, WebP).
  *  2. Validate file size (≤ 2 MB).
- *  3. Check whether an old object already exists at `user/<userId>/avatar`.
- *  4. Upload the new file to the same path (`upsert: true` as a safety net).
- *  5. Delete the old object ONLY after the upload succeeds — this ensures
- *     the old avatar is never removed if the upload fails. Since upsert
- *     already replaces the object atomically, the explicit delete here
- *     satisfies the spec requirement that the old file is traceable as
- *     "removed" at the storage layer (visible via bucket listing). Supabase
- *     Storage upsert overwrites in-place; an explicit remove creates the
- *     distinct delete event required by the Manual QA checklist.
- *  6. Generate a signed URL (1-hour expiry).
- *  7. Persist the signed URL in `user_profiles.avatar_url`, return it.
+ *  3. Upload to the fixed path `user/<userId>/avatar` with `upsert: true`.
+ *     There is exactly one avatar object per user — replacing an avatar
+ *     overwrites that same object in place; there is no separate "old"
+ *     object to clean up afterward. (An earlier version of this function
+ *     additionally called `remove()` on the same path right after upload,
+ *     intending to "delete the old avatar" — since old and new share the
+ *     one deterministic path, that call deleted the file just written,
+ *     leaving the user with no avatar at all after every replacement. That
+ *     step has been removed; `upsert: true` alone is both necessary and
+ *     sufficient for replacement.)
+ *  4. Persist the stable PATH (not a signed URL — those expire) to
+ *     `user_profiles.avatar_url`.
+ *  5. Generate a fresh signed URL for the immediate API response.
+ *
+ * Overwriting an existing object via `upsert: true` performs an UPDATE on
+ * `storage.objects`, which requires the `avatars_update_own` RLS policy
+ * (see `0003_user_profiles.sql`) in addition to the INSERT policy used for
+ * first-time uploads.
  *
  * Target: p95 < 3 s end-to-end.
  */
@@ -55,23 +92,9 @@ export async function uploadAvatar(userId: string, file: File | Buffer, mimeType
   }
 
   const supabase = await createSupabaseServerClient();
-  const storagePath = `user/${userId}/avatar`;
+  const storagePath = avatarStoragePath(userId);
 
-  // ── 3. Check whether an old object already exists ───────────────────────
-  const { data: existingFiles, error: listError } = await supabase.storage
-    .from("avatars")
-    .list(`user/${userId}`, { search: "avatar" });
-
-  if (listError) {
-    // Non-fatal: log and continue — worst case we skip the post-upload delete.
-    log.warn({ userId, storageError: listError.message }, "uploadAvatar: could not list existing objects");
-  }
-
-  const oldAvatarExists = !listError && Array.isArray(existingFiles) && existingFiles.length > 0;
-
-  log.info({ userId, oldAvatarExists }, "uploadAvatar: checked for existing avatar");
-
-  // ── 4. Upload new file ───────────────────────────────────────────────────
+  // ── 3. Upload (create or replace) ────────────────────────────────────────
   const fileBody = file instanceof File ? file : Buffer.from(file);
 
   const { error: uploadError } = await supabase.storage.from("avatars").upload(storagePath, fileBody, {
@@ -86,49 +109,26 @@ export async function uploadAvatar(userId: string, file: File | Buffer, mimeType
 
   log.info({ userId }, "uploadAvatar: upload succeeded");
 
-  // ── 5. Delete old object ONLY after upload succeeds ──────────────────────
-  // Per spec: "Hapus object lama HANYA setelah upload baru berhasil".
-  // Even though upsert replaced the bytes in-place, an explicit remove()
-  // creates the storage delete event required by the Manual QA checklist
-  // ("verify in Supabase Storage dashboard that the old file is actually
-  // deleted, not just hidden from the UI"). We only attempt this when we
-  // confirmed a previous object existed to avoid spurious errors.
-  if (oldAvatarExists) {
-    const { error: deleteError } = await supabase.storage.from("avatars").remove([storagePath]);
-    if (deleteError) {
-      // Deletion failure is non-fatal: the new avatar is already uploaded.
-      // Log and continue — the dashboard may still show the old metadata,
-      // but the file content has already been replaced by the upsert.
-      log.warn({ userId, storageError: deleteError.message }, "uploadAvatar: could not delete old avatar (non-fatal)");
-    } else {
-      log.info({ userId }, "uploadAvatar: old avatar deleted successfully");
-    }
-  }
-
-  // ── 6. Generate signed URL ───────────────────────────────────────────────
-  const { data: signedUrlData, error: signedUrlError } = await supabase.storage
-    .from("avatars")
-    .createSignedUrl(storagePath, SIGNED_URL_EXPIRY_SECONDS);
-
-  if (signedUrlError || !signedUrlData?.signedUrl) {
-    log.error({ userId, err: signedUrlError?.message }, "uploadAvatar: failed to generate signed URL");
-    throw new InternalError("Avatar uploaded but could not generate access URL.", { cause: signedUrlError });
-  }
-
-  const signedUrl = signedUrlData.signedUrl;
-
-  // ── 7. Persist signed URL in user_profiles ───────────────────────────────
+  // ── 4. Persist the stable path (never a signed URL) ─────────────────────
   const { error: updateError } = await supabase
     .from("user_profiles")
-    .update({ avatar_url: signedUrl })
+    .update({ avatar_url: storagePath })
     .eq("id", userId);
 
   if (updateError) {
-    log.error({ userId, dbError: updateError.message }, "uploadAvatar: failed to persist avatar_url");
+    log.error({ userId, dbError: updateError.message }, "uploadAvatar: failed to persist avatar path");
     throw new InternalError("Avatar uploaded but profile could not be updated.", { cause: updateError });
   }
 
-  log.info({ userId }, "uploadAvatar: avatar_url persisted");
+  log.info({ userId }, "uploadAvatar: avatar path persisted");
+
+  // ── 5. Generate a fresh signed URL for the response ──────────────────────
+  const signedUrl = await resolveAvatarUrl(supabase, storagePath);
+
+  if (!signedUrl) {
+    log.error({ userId }, "uploadAvatar: upload succeeded but signing failed immediately after");
+    throw new InternalError("Avatar uploaded but could not generate access URL.");
+  }
 
   return signedUrl;
 }

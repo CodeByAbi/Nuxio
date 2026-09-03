@@ -1,6 +1,7 @@
 import { NotFoundError, InternalError } from "@/lib/server/shared/errors";
 import { createSupabaseServerClient } from "@/lib/server/shared/supabase-server-client";
 import { childLogger } from "@/lib/server/shared/logger";
+import { resolveAvatarUrl } from "@/lib/server/profile/avatar.service";
 import type { Profile, ProfileWithTimestamps } from "@/types/profile";
 
 const log = childLogger("profile-service");
@@ -13,6 +14,10 @@ const log = childLogger("profile-service");
  * Never throws an unhandled exception for the "row missing" case.
  *
  * RN-11: `display_name` is NEVER logged here.
+ *
+ * `avatar_url` in the DB row is a stable Storage path, not a URL — it is
+ * resolved into a fresh signed URL on every call so the response never
+ * carries an expired link. See `avatar.service.ts#resolveAvatarUrl`.
  */
 export async function getProfile(userId: string): Promise<Profile> {
   const supabase = await createSupabaseServerClient();
@@ -35,7 +40,9 @@ export async function getProfile(userId: string): Promise<Profile> {
     );
   }
 
-  return data as Profile;
+  const avatarUrl = await resolveAvatarUrl(supabase, data.avatar_url);
+
+  return { id: data.id, display_name: data.display_name, avatar_url: avatarUrl };
 }
 
 /**
@@ -45,6 +52,10 @@ export async function getProfile(userId: string): Promise<Profile> {
  *
  * RN-11: `display_name` input is never written to logs — only structural
  * metadata (userId, success/failure) is logged.
+ *
+ * `avatar_url` is resolved to a fresh signed URL the same way `getProfile`
+ * does, since the PATCH response also carries this field per the API
+ * contract.
  */
 export async function updateProfile(
   userId: string,
@@ -66,5 +77,7 @@ export async function updateProfile(
 
   log.info({ userId }, "updateProfile: display_name updated successfully");
 
-  return data as ProfileWithTimestamps;
+  const avatarUrl = await resolveAvatarUrl(supabase, data.avatar_url);
+
+  return { id: data.id, display_name: data.display_name, avatar_url: avatarUrl, updated_at: data.updated_at };
 }

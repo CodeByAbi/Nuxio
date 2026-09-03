@@ -2,7 +2,10 @@
  * Unit tests for avatar.service — validation logic and upload flow.
  *
  * These tests exercise the pure validation path without hitting Supabase,
- * so the Supabase client and all server modules are mocked.
+ * so the Supabase client and all server modules are mocked. Real Storage
+ * RLS behavior (the thing that actually broke avatar replacement) is
+ * covered separately by `__tests__/integration/storage-rls.live.test.ts`
+ * against a real local Supabase stack — mocks cannot verify RLS.
  */
 
 // ── Module mocks (must be hoisted before imports) ─────────────────────────────
@@ -20,7 +23,7 @@ jest.mock("@/lib/server/shared/supabase-server-client", () => ({
 }));
 
 // ── Imports ───────────────────────────────────────────────────────────────────
-import { uploadAvatar } from "@/lib/server/profile/avatar.service";
+import { uploadAvatar, resolveAvatarUrl, avatarStoragePath } from "@/lib/server/profile/avatar.service";
 import { createSupabaseServerClient } from "@/lib/server/shared/supabase-server-client";
 import { ValidationError } from "@/lib/server/shared/errors";
 
@@ -33,74 +36,33 @@ function makeFile(sizeBytes: number, mimeType: string, name = "test"): File {
 }
 
 /**
- * Configure the Supabase mock so the full upload flow succeeds.
- *
- * The mock covers the new steps introduced to satisfy the spec:
- *  - Step 3: list() to check for existing object  → returns one file
- *  - Step 4: upload() with upsert                 → succeeds
- *  - Step 5: remove() explicit delete             → succeeds
- *  - Step 6: createSignedUrl()                    → returns signed URL
- *  - Step 7: from("user_profiles").update()       → succeeds
+ * Configure the Supabase mock so the full upload flow succeeds:
+ *  - upload() with upsert          → succeeds
+ *  - user_profiles.update()        → persists the stable path
+ *  - createSignedUrl()             → returns a signed URL for the response
  */
 function mockSuccessfulUpload() {
   const uploadMock = jest.fn().mockResolvedValue({ data: {}, error: null });
   const removeMock = jest.fn().mockResolvedValue({ data: {}, error: null });
-  const listMock = jest.fn().mockResolvedValue({
-    data: [{ name: "avatar" }],
-    error: null,
-  });
   const createSignedUrlMock = jest.fn().mockResolvedValue({
     data: { signedUrl: "https://signed.example.com/avatar" },
     error: null,
   });
+  const eqMock = jest.fn().mockResolvedValue({ error: null });
+  const updateMock = jest.fn(() => ({ eq: eqMock }));
 
   mockedCreateClient.mockResolvedValue({
     storage: {
       from: () => ({
         upload: uploadMock,
         remove: removeMock,
-        list: listMock,
         createSignedUrl: createSignedUrlMock,
       }),
     },
-    from: () => ({
-      update: jest.fn().mockReturnThis(),
-      eq: jest.fn().mockResolvedValue({ error: null }),
-    }),
+    from: () => ({ update: updateMock }),
   });
 
-  return { uploadMock, removeMock, listMock, createSignedUrlMock };
-}
-
-/**
- * Configure the mock for the case where no previous avatar exists.
- * list() returns an empty array → remove() should NOT be called.
- */
-function mockSuccessfulUploadNoExisting() {
-  const uploadMock = jest.fn().mockResolvedValue({ data: {}, error: null });
-  const removeMock = jest.fn().mockResolvedValue({ data: {}, error: null });
-  const listMock = jest.fn().mockResolvedValue({ data: [], error: null });
-  const createSignedUrlMock = jest.fn().mockResolvedValue({
-    data: { signedUrl: "https://signed.example.com/avatar" },
-    error: null,
-  });
-
-  mockedCreateClient.mockResolvedValue({
-    storage: {
-      from: () => ({
-        upload: uploadMock,
-        remove: removeMock,
-        list: listMock,
-        createSignedUrl: createSignedUrlMock,
-      }),
-    },
-    from: () => ({
-      update: jest.fn().mockReturnThis(),
-      eq: jest.fn().mockResolvedValue({ error: null }),
-    }),
-  });
-
-  return { uploadMock, removeMock, listMock };
+  return { uploadMock, removeMock, createSignedUrlMock, updateMock, eqMock };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -119,7 +81,7 @@ describe("avatar.service — file validation", () => {
 
     await expect(uploadAvatar(FAKE_USER_ID, pdfFile)).rejects.toMatchObject({
       name: "ValidationError",
-      statusCode: 422,
+      statusCode: 400,
     });
   });
 
@@ -128,7 +90,7 @@ describe("avatar.service — file validation", () => {
 
     await expect(uploadAvatar(FAKE_USER_ID, exeFile)).rejects.toMatchObject({
       name: "ValidationError",
-      statusCode: 422,
+      statusCode: 400,
     });
   });
 
@@ -145,7 +107,7 @@ describe("avatar.service — file validation", () => {
 
     await expect(uploadAvatar(FAKE_USER_ID, threeMb)).rejects.toMatchObject({
       name: "ValidationError",
-      statusCode: 422,
+      statusCode: 400,
     });
   });
 
@@ -183,34 +145,38 @@ describe("avatar.service — file validation", () => {
 
 // ─────────────────────────────────────────────────────────────────────────────
 
-describe("avatar.service — upload flow (step 3 & 5)", () => {
+describe("avatar.service — upload flow", () => {
   const FAKE_USER_ID = "00000000-0000-0000-0000-000000000001";
 
   beforeEach(() => {
     jest.clearAllMocks();
   });
 
-  it("calls list() to check for existing avatar before uploading (step 3)", async () => {
-    const { listMock } = mockSuccessfulUpload();
+  it("uploads with upsert:true to the deterministic path", async () => {
+    const { uploadMock } = mockSuccessfulUpload();
     const file = makeFile(100_000, "image/png", "avatar.png");
 
     await uploadAvatar(FAKE_USER_ID, file);
 
-    expect(listMock).toHaveBeenCalledWith(`user/${FAKE_USER_ID}`, { search: "avatar" });
+    expect(uploadMock).toHaveBeenCalledWith(
+      avatarStoragePath(FAKE_USER_ID),
+      expect.anything(),
+      expect.objectContaining({ upsert: true }),
+    );
   });
 
-  it("calls remove() to delete old avatar after successful upload when previous exists (step 5)", async () => {
-    const { removeMock } = mockSuccessfulUpload(); // list returns [{name: "avatar"}]
+  it("persists the STABLE PATH (not a signed URL) to user_profiles.avatar_url", async () => {
+    const { updateMock, eqMock } = mockSuccessfulUpload();
     const file = makeFile(100_000, "image/png", "avatar.png");
 
     await uploadAvatar(FAKE_USER_ID, file);
 
-    // remove() must be called with the same path
-    expect(removeMock).toHaveBeenCalledWith([`user/${FAKE_USER_ID}/avatar`]);
+    expect(updateMock).toHaveBeenCalledWith({ avatar_url: avatarStoragePath(FAKE_USER_ID) });
+    expect(eqMock).toHaveBeenCalledWith("id", FAKE_USER_ID);
   });
 
-  it("does NOT call remove() when no previous avatar exists (step 5 skip)", async () => {
-    const { removeMock } = mockSuccessfulUploadNoExisting(); // list returns []
+  it("regression guard: does NOT call remove() after upload (that previously deleted the just-uploaded file, since old and new share one deterministic path)", async () => {
+    const { removeMock } = mockSuccessfulUpload();
     const file = makeFile(100_000, "image/png", "avatar.png");
 
     await uploadAvatar(FAKE_USER_ID, file);
@@ -218,47 +184,65 @@ describe("avatar.service — upload flow (step 3 & 5)", () => {
     expect(removeMock).not.toHaveBeenCalled();
   });
 
-  it("does NOT throw when remove() fails after successful upload (non-fatal, step 5)", async () => {
-    const uploadMock = jest.fn().mockResolvedValue({ data: {}, error: null });
-    const removeMock = jest.fn().mockResolvedValue({
-      data: null,
-      error: { message: "storage error" },
-    });
-    const listMock = jest.fn().mockResolvedValue({
-      data: [{ name: "avatar" }],
-      error: null,
-    });
-    const createSignedUrlMock = jest.fn().mockResolvedValue({
-      data: { signedUrl: "https://signed.example.com/avatar" },
-      error: null,
-    });
-
-    mockedCreateClient.mockResolvedValue({
-      storage: {
-        from: () => ({
-          upload: uploadMock,
-          remove: removeMock,
-          list: listMock,
-          createSignedUrl: createSignedUrlMock,
-        }),
-      },
-      from: () => ({
-        update: jest.fn().mockReturnThis(),
-        eq: jest.fn().mockResolvedValue({ error: null }),
-      }),
-    });
-
-    const file = makeFile(100_000, "image/png", "avatar.png");
-
-    // Should still resolve successfully even though delete failed
-    await expect(uploadAvatar(FAKE_USER_ID, file)).resolves.toBe("https://signed.example.com/avatar");
-  });
-
-  it("returns the signed URL on success", async () => {
+  it("returns a freshly signed URL on success", async () => {
     mockSuccessfulUpload();
     const file = makeFile(200_000, "image/jpeg", "photo.jpg");
 
     const result = await uploadAvatar(FAKE_USER_ID, file);
     expect(result).toBe("https://signed.example.com/avatar");
+  });
+
+  it("throws InternalError when the storage upload itself fails", async () => {
+    mockedCreateClient.mockResolvedValue({
+      storage: {
+        from: () => ({
+          upload: jest.fn().mockResolvedValue({ data: null, error: { message: "storage down" } }),
+        }),
+      },
+      from: () => ({ update: jest.fn() }),
+    });
+    const file = makeFile(100_000, "image/png", "avatar.png");
+
+    await expect(uploadAvatar(FAKE_USER_ID, file)).rejects.toMatchObject({ name: "InternalError" });
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("avatar.service — resolveAvatarUrl", () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it("returns null immediately for a null path, without touching Storage", async () => {
+    const createSignedUrlMock = jest.fn();
+    const supabase = { storage: { from: () => ({ createSignedUrl: createSignedUrlMock }) } } as never;
+
+    const result = await resolveAvatarUrl(supabase, null);
+
+    expect(result).toBeNull();
+    expect(createSignedUrlMock).not.toHaveBeenCalled();
+  });
+
+  it("returns a fresh signed URL for a stored path", async () => {
+    const createSignedUrlMock = jest.fn().mockResolvedValue({
+      data: { signedUrl: "https://signed.example.com/fresh" },
+      error: null,
+    });
+    const supabase = { storage: { from: () => ({ createSignedUrl: createSignedUrlMock }) } } as never;
+
+    const result = await resolveAvatarUrl(supabase, "user/abc/avatar");
+
+    expect(result).toBe("https://signed.example.com/fresh");
+    expect(createSignedUrlMock).toHaveBeenCalledWith("user/abc/avatar", 60 * 60);
+  });
+
+  it("returns null (not a throw) when signing fails — e.g. the object was removed out-of-band", async () => {
+    const createSignedUrlMock = jest.fn().mockResolvedValue({ data: null, error: { message: "not found" } });
+    const supabase = { storage: { from: () => ({ createSignedUrl: createSignedUrlMock }) } } as never;
+
+    const result = await resolveAvatarUrl(supabase, "user/abc/avatar");
+
+    expect(result).toBeNull();
   });
 });

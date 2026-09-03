@@ -15,7 +15,7 @@ describe("error taxonomy", () => {
     [AuthenticationError, ErrorCode.AUTHENTICATION_ERROR, 401],
     [AuthorizationError, ErrorCode.AUTHORIZATION_ERROR, 403],
     [NotFoundError, ErrorCode.NOT_FOUND, 404],
-    [ValidationError, ErrorCode.VALIDATION_ERROR, 422],
+    [ValidationError, ErrorCode.VALIDATION_ERROR, 400],
     [ConflictError, ErrorCode.CONFLICT, 409],
     [RateLimitError, ErrorCode.RATE_LIMIT_EXCEEDED, 429],
     [InternalError, ErrorCode.INTERNAL_ERROR, 500],

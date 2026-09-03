@@ -20,11 +20,16 @@ export type ProfileWithTimestamps = Profile & {
 
 /**
  * Zod schema for the PATCH /api/profile request body.
- * Rules mirror the DB CHECK constraint: 1–50 chars, no leading/trailing whitespace.
+ * Rules mirror the DB CHECK constraint: 1–50 chars after trimming, so a
+ * whitespace-only value (e.g. "   ") is rejected rather than silently
+ * accepted as a "valid" empty-looking name. The DB CHECK only enforces
+ * char_length >= 1, so trimming must happen here — the value that reaches
+ * the database is the already-trimmed one, keeping both layers coherent.
  */
 export const updateProfileSchema = z.object({
   display_name: z
     .string()
+    .trim()
     .min(1, "Display name must be at least 1 character.")
     .max(50, "Display name must be at most 50 characters."),
 });

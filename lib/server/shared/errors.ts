@@ -51,7 +51,11 @@ export class NotFoundError extends AppError {
 
 export class ValidationError extends AppError {
   readonly code = ErrorCode.VALIDATION_ERROR;
-  readonly statusCode = 422;
+  // Per `docs/04. PRD.md` §14 (the canonical error taxonomy table): ValidationError = 400,
+  // DomainRuleError = 422. This class previously used 422, which belongs to DomainRuleError
+  // (a distinct class not yet implemented in this repo) — confirmed as accidental drift, not
+  // an intentional repo-wide convention, since no document establishes 422 for input validation.
+  readonly statusCode = 400;
   readonly fieldErrors?: ValidationFieldError[];
 
   constructor(
