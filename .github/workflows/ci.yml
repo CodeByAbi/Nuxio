@@ -43,8 +43,48 @@ jobs:
         run: npx tsc --noEmit
 
       - name: Unit tests
-        run: npm test -- --coverage --passWithNoTests
+        # No --passWithNoTests: this suite is mock-only and must always have
+        # at least one real test file. If it doesn't, that's a regression to
+        # catch, not something to silently pass.
+        run: npm test -- --coverage
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL_TEST }}
           SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY_TEST }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY_TEST }}
+
+      # ── Real Supabase security suite (RLS, triggers, concurrency) ──────────
+      # Runs against a fresh local Supabase stack spun up in this job, NOT
+      # the SUPABASE_URL_TEST secret used above — the RLS/last-admin/
+      # concurrency/signup-atomicity tests below need a database whose
+      # migrations (including 0007's triggers) are known to be applied and
+      # whose state isn't shared with any other concurrent CI run. This is
+      # not optional and has no equivalent of --passWithNoTests: if
+      # __tests__/db ever ends up empty, `jest` exits non-zero on its own.
+      - name: Setup Supabase CLI
+        uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Start local Supabase and apply migrations
+        run: |
+          supabase start
+          supabase db reset
+
+      - name: Capture local Supabase credentials
+        id: supabase_local
+        run: |
+          supabase status -o json > /tmp/supabase-status.json
+          echo "anon_key=$(jq -r '.ANON_KEY' /tmp/supabase-status.json)" >> "$GITHUB_OUTPUT"
+          echo "service_role_key=$(jq -r '.SERVICE_ROLE_KEY' /tmp/supabase-status.json)" >> "$GITHUB_OUTPUT"
+
+      - name: Real Supabase security/RLS/concurrency tests
+        run: npm run test:db
+        env:
+          SUPABASE_URL: "http://127.0.0.1:54321"
+          SUPABASE_ANON_KEY: ${{ steps.supabase_local.outputs.anon_key }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ steps.supabase_local.outputs.service_role_key }}
+          SUPABASE_DB_URL: "postgresql://postgres:postgres@127.0.0.1:54322/postgres"
+
+      - name: Stop local Supabase
+        if: always()
+        run: supabase stop
