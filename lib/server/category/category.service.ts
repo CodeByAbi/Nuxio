@@ -8,28 +8,22 @@
  * - Create custom categories
  * - Archive categories (soft delete only — no hard delete)
  * - Categories are workspace-scoped via RLS
+ *
+ * `is_default`, `workspace_id`, and the archive-default-category rule are
+ * also enforced at the database layer (migration 0007's
+ * `trg_protect_category_invariants` trigger) — the checks here exist for
+ * friendly error messages, not as the only line of defense.
  */
 
-import { createServerClient } from '@/lib/server/shared/supabase-server-client';
-import {
-  NotFoundError,
-  ConflictError,
-  DomainRuleError,
-} from '@/lib/server/shared/errors';
-import logger from '@/lib/server/shared/logger';
-import type {
-  Category,
-  CreateCategoryInput,
-  UpdateCategoryInput,
-  CategoryDirection,
-} from '@/types/category';
+import { createSupabaseServerClient } from "@/lib/server/shared/supabase-server-client";
+import { NotFoundError, ConflictError, DomainRuleError } from "@/lib/server/shared/errors";
+import { childLogger } from "@/lib/server/shared/logger";
+import type { Category, CreateCategoryInput, UpdateCategoryInput, CategoryDirection } from "@/types/category";
+
+const log = childLogger("category-service");
 
 /**
  * List categories for a workspace.
- *
- * @param workspaceId - Workspace ID
- * @param options - Filter options
- * @returns Array of categories
  */
 export async function listCategories(
   workspaceId: string,
@@ -38,60 +32,46 @@ export async function listCategories(
     includeArchived?: boolean;
   },
 ): Promise<Category[]> {
-  const supabase = await createServerClient();
+  const supabase = await createSupabaseServerClient();
 
   let query = supabase
-    .from('categories')
-    .select('*')
-    .eq('workspace_id', workspaceId)
-    .order('name', { ascending: true });
+    .from("categories")
+    .select("*")
+    .eq("workspace_id", workspaceId)
+    .order("name", { ascending: true });
 
-  // Filter by direction if specified
   if (options?.direction) {
-    query = query.eq('direction', options.direction);
+    query = query.eq("direction", options.direction);
   }
 
-  // Exclude archived by default
   if (!options?.includeArchived) {
-    query = query.eq('archived', false);
+    query = query.eq("archived", false);
   }
 
   const { data, error } = await query;
 
   if (error) {
-    logger.error('category.service: listCategories failed', {
-      workspaceId,
-      error: error.message,
-    });
-    throw new Error('Failed to list categories');
+    log.error({ workspaceId, err: error.message }, "listCategories failed");
+    throw new Error("Failed to list categories");
   }
 
-  return (data || []) as Category[];
+  return (data ?? []) as Category[];
 }
 
 /**
  * Get category by ID.
  * Caller must verify workspace membership before calling this.
  *
- * @param categoryId - Category ID
- * @returns Category object
  * @throws {NotFoundError} If category not found
  */
 export async function getCategory(categoryId: string): Promise<Category> {
-  const supabase = await createServerClient();
+  const supabase = await createSupabaseServerClient();
 
-  const { data, error } = await supabase
-    .from('categories')
-    .select('*')
-    .eq('id', categoryId)
-    .single();
+  const { data, error } = await supabase.from("categories").select("*").eq("id", categoryId).single();
 
   if (error || !data) {
-    logger.warn('category.service: category not found', {
-      categoryId,
-      error: error?.message,
-    });
-    throw new NotFoundError('Category not found');
+    log.warn({ categoryId, err: error?.message }, "category not found");
+    throw new NotFoundError("Category not found");
   }
 
   return data as Category;
@@ -101,34 +81,26 @@ export async function getCategory(categoryId: string): Promise<Category> {
  * Create a custom category.
  * Caller must verify workspace membership before calling this.
  *
- * @param input - Category creation data
- * @returns Created category
  * @throws {ConflictError} If duplicate (workspace_id, name, direction)
  */
-export async function createCategory(
-  input: CreateCategoryInput,
-): Promise<Category> {
-  const supabase = await createServerClient();
+export async function createCategory(input: CreateCategoryInput): Promise<Category> {
+  const supabase = await createSupabaseServerClient();
 
-  // Check for duplicate (same name + direction in same workspace)
   const { data: existing } = await supabase
-    .from('categories')
-    .select('id')
-    .eq('workspace_id', input.workspace_id)
-    .eq('name', input.name)
-    .eq('direction', input.direction)
-    .eq('archived', false) // archived categories don't block new ones
+    .from("categories")
+    .select("id")
+    .eq("workspace_id", input.workspace_id)
+    .eq("name", input.name)
+    .eq("direction", input.direction)
+    .eq("archived", false)
     .maybeSingle();
 
   if (existing) {
-    throw new ConflictError(
-      `Category "${input.name}" already exists as ${input.direction}`,
-    );
+    throw new ConflictError(`Category "${input.name}" already exists as ${input.direction}`);
   }
 
-  // Insert (RLS policy ensures user is workspace member)
   const { data, error } = await supabase
-    .from('categories')
+    .from("categories")
     .insert({
       workspace_id: input.workspace_id,
       name: input.name,
@@ -139,28 +111,18 @@ export async function createCategory(
     .single();
 
   if (error) {
-    logger.error('category.service: createCategory failed', {
-      workspaceId: input.workspace_id,
-      name: input.name,
-      error: error.message,
-    });
+    log.error({ workspaceId: input.workspace_id, name: input.name, err: error.message }, "createCategory failed");
 
-    // Handle unique constraint violation
-    if (error.code === '23505') {
-      // PostgreSQL unique violation
-      throw new ConflictError(
-        `Category "${input.name}" already exists as ${input.direction}`,
-      );
+    if (error.code === "23505") {
+      // Unique constraint race: another request created the same
+      // (workspace_id, name, direction) between our check and our insert.
+      throw new ConflictError(`Category "${input.name}" already exists as ${input.direction}`);
     }
 
-    throw new Error('Failed to create category');
+    throw new Error("Failed to create category");
   }
 
-  logger.info('category.service: category created', {
-    categoryId: data.id,
-    workspaceId: input.workspace_id,
-    name: input.name,
-  });
+  log.info({ categoryId: data.id, workspaceId: input.workspace_id, name: input.name }, "category created");
 
   return data as Category;
 }
@@ -169,65 +131,48 @@ export async function createCategory(
  * Update category metadata.
  * Currently only name can be updated (direction is immutable).
  *
- * @param categoryId - Category ID
- * @param input - Update data
- * @returns Updated category
  * @throws {NotFoundError} If category not found
  * @throws {ConflictError} If new name conflicts with existing
  */
-export async function updateCategory(
-  categoryId: string,
-  input: UpdateCategoryInput,
-): Promise<Category> {
-  const supabase = await createServerClient();
+export async function updateCategory(categoryId: string, input: UpdateCategoryInput): Promise<Category> {
+  const supabase = await createSupabaseServerClient();
 
   if (!input.name) {
-    throw new DomainRuleError('No update data provided');
+    throw new DomainRuleError("No update data provided");
   }
 
-  // Fetch existing category first
   const existing = await getCategory(categoryId);
 
-  // Check for duplicate name in same workspace + direction
   const { data: duplicate } = await supabase
-    .from('categories')
-    .select('id')
-    .eq('workspace_id', existing.workspace_id)
-    .eq('name', input.name)
-    .eq('direction', existing.direction)
-    .eq('archived', false)
-    .neq('id', categoryId) // exclude self
+    .from("categories")
+    .select("id")
+    .eq("workspace_id", existing.workspace_id)
+    .eq("name", input.name)
+    .eq("direction", existing.direction)
+    .eq("archived", false)
+    .neq("id", categoryId)
     .maybeSingle();
 
   if (duplicate) {
-    throw new ConflictError(
-      `Category "${input.name}" already exists as ${existing.direction}`,
-    );
+    throw new ConflictError(`Category "${input.name}" already exists as ${existing.direction}`);
   }
 
-  // Update (RLS policy ensures user is workspace member)
   const { data, error } = await supabase
-    .from('categories')
+    .from("categories")
     .update({
       name: input.name,
       updated_at: new Date().toISOString(),
     })
-    .eq('id', categoryId)
+    .eq("id", categoryId)
     .select()
     .single();
 
   if (error || !data) {
-    logger.error('category.service: updateCategory failed', {
-      categoryId,
-      error: error?.message,
-    });
-    throw new NotFoundError('Category not found or update failed');
+    log.error({ categoryId, err: error?.message }, "updateCategory failed");
+    throw new NotFoundError("Category not found or update failed");
   }
 
-  logger.info('category.service: category updated', {
-    categoryId,
-    name: input.name,
-  });
+  log.info({ categoryId, name: input.name }, "category updated");
 
   return data as Category;
 }
@@ -236,84 +181,72 @@ export async function updateCategory(
  * Archive a category (soft delete).
  * Archived categories are excluded from lists by default.
  *
- * IMPORTANT: Default categories (is_default = true) cannot be archived.
- * Historical transactions retain their category_id even after archiving
- * (ON DELETE RESTRICT + soft delete = safe by construction).
+ * IMPORTANT: Default categories (is_default = true) cannot be archived —
+ * enforced here for a friendly error, and again at the database layer by
+ * `trg_protect_category_invariants` (migration 0007) if this check is
+ * bypassed via direct PostgREST access.
  *
- * @param categoryId - Category ID
  * @throws {NotFoundError} If category not found
- * @throws {DomainRuleError} If trying to archive default category
+ * @throws {DomainRuleError} If trying to archive a default category
  */
 export async function archiveCategory(categoryId: string): Promise<Category> {
-  const supabase = await createServerClient();
+  const supabase = await createSupabaseServerClient();
 
-  // Fetch existing category first
   const existing = await getCategory(categoryId);
 
-  // Prevent archiving default categories
   if (existing.is_default) {
-    throw new DomainRuleError('Cannot archive default categories');
+    throw new DomainRuleError("Cannot archive default categories");
   }
 
-  // Update archived flag (RLS policy ensures user is workspace member)
   const { data, error } = await supabase
-    .from('categories')
+    .from("categories")
     .update({
       archived: true,
       updated_at: new Date().toISOString(),
     })
-    .eq('id', categoryId)
+    .eq("id", categoryId)
     .select()
     .single();
 
-  if (error || !data) {
-    logger.error('category.service: archiveCategory failed', {
-      categoryId,
-      error: error?.message,
-    });
-    throw new NotFoundError('Category not found or archive failed');
+  if (error) {
+    if (error.message.includes("DEFAULT_CATEGORY")) {
+      throw new DomainRuleError("Cannot archive default categories");
+    }
+    log.error({ categoryId, err: error.message }, "archiveCategory failed");
+    throw new NotFoundError("Category not found or archive failed");
   }
 
-  logger.info('category.service: category archived', {
-    categoryId,
-    name: existing.name,
-  });
+  if (!data) {
+    throw new NotFoundError("Category not found or archive failed");
+  }
+
+  log.info({ categoryId, name: existing.name }, "category archived");
 
   return data as Category;
 }
 
 /**
  * Unarchive a category.
- * Useful if user archived by mistake.
- *
- * @param categoryId - Category ID
  */
-export async function unarchiveCategory(
-  categoryId: string,
-): Promise<Category> {
-  const supabase = await createServerClient();
+export async function unarchiveCategory(categoryId: string): Promise<Category> {
+  const supabase = await createSupabaseServerClient();
 
   const { data, error } = await supabase
-    .from('categories')
+    .from("categories")
     .update({
       archived: false,
       updated_at: new Date().toISOString(),
     })
-    .eq('id', categoryId)
+    .eq("id", categoryId)
     .select()
     .single();
 
   if (error || !data) {
-    logger.error('category.service: unarchiveCategory failed', {
-      categoryId,
-      error: error?.message,
-    });
-    throw new NotFoundError('Category not found or unarchive failed');
+    log.error({ categoryId, err: error?.message }, "unarchiveCategory failed");
+    throw new NotFoundError("Category not found or unarchive failed");
   }
 
-  logger.info('category.service: category unarchived', {
-    categoryId,
-  });
+  log.info({ categoryId }, "category unarchived");
 
   return data as Category;
 }

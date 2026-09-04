@@ -9,16 +9,17 @@
  * - CRUD operations on workspace metadata
  * - Member management (invite, remove, change role)
  * - Enforce business rules (e.g., RN-17: cannot remove last admin)
+ *
+ * Every mutation here also has a database-level backstop (triggers /
+ * SECURITY DEFINER RPCs — see migrations 0006 and 0007) that is authoritative
+ * even if this service layer is bypassed entirely via direct PostgREST
+ * access. The checks in this file exist for fast, friendly error messages —
+ * not as the only line of defense.
  */
 
-import { createServerClient } from '@/lib/server/shared/supabase-server-client';
-import {
-  NotFoundError,
-  ConflictError,
-  DomainRuleError,
-  AuthorizationError,
-} from '@/lib/server/shared/errors';
-import logger from '@/lib/server/shared/logger';
+import { createSupabaseServerClient } from "@/lib/server/shared/supabase-server-client";
+import { NotFoundError, ConflictError, DomainRuleError, AuthorizationError } from "@/lib/server/shared/errors";
+import { childLogger } from "@/lib/server/shared/logger";
 import type {
   Workspace,
   WorkspaceMember,
@@ -26,67 +27,38 @@ import type {
   UpdateWorkspaceInput,
   InviteMemberInput,
   ChangeMemberRoleInput,
-} from '@/types/workspace';
+} from "@/types/workspace";
+
+const log = childLogger("workspace-service");
 
 /**
  * Get workspace by ID.
  * Caller must verify workspace membership before calling this.
  *
- * @param workspaceId - Workspace ID
- * @returns Workspace object
  * @throws {NotFoundError} If workspace not found
  */
-export async function getWorkspace(
-  workspaceId: string,
-): Promise<Workspace> {
-  const supabase = await createServerClient();
+export async function getWorkspace(workspaceId: string): Promise<Workspace> {
+  const supabase = await createSupabaseServerClient();
 
-  const { data, error } = await supabase
-    .from('workspaces')
-    .select('*')
-    .eq('id', workspaceId)
-    .single();
+  const { data, error } = await supabase.from("workspaces").select("*").eq("id", workspaceId).single();
 
   if (error || !data) {
-    logger.warn('workspace.service: workspace not found', {
-      workspaceId,
-      error: error?.message,
-    });
-    throw new NotFoundError('Workspace not found');
+    log.warn({ workspaceId, err: error?.message }, "workspace not found");
+    throw new NotFoundError("Workspace not found");
   }
 
   return data as Workspace;
 }
 
 /**
- * Create Personal workspace.
- *
- * IMPORTANT: This should ONLY be called by handle_new_user trigger (migration 0006).
- * Personal workspace creation is automatic on signup — users cannot create
- * Personal workspaces manually via API.
- *
- * This function exists as a service method for testing purposes only.
- *
- * @param userId - User ID from auth.users
- * @param displayName - Initial display name for user_profiles
- * @returns Workspace object
+ * Personal workspace creation is automatic on signup via the
+ * `handle_new_user` trigger (migration 0006) — users cannot create Personal
+ * workspaces manually via API. This function intentionally does not exist
+ * as a callable path; it documents that fact for anyone tempted to add one.
  */
-export async function createPersonalWorkspace(
-  userId: string,
-  displayName: string = 'User',
-): Promise<Workspace> {
-  const supabase = await createServerClient();
-
-  // This would be called by trigger with elevated privileges
-  // For now, it's a placeholder — actual Personal workspace creation
-  // happens in handle_new_user() trigger (migration 0006)
-
-  logger.info('workspace.service: createPersonalWorkspace called', {
-    userId,
-  });
-
-  throw new Error(
-    'Personal workspace creation should only happen via handle_new_user trigger',
+export async function createPersonalWorkspace(): Promise<never> {
+  throw new DomainRuleError(
+    "Personal workspace creation happens automatically at signup and cannot be invoked directly.",
   );
 }
 
@@ -94,52 +66,33 @@ export async function createPersonalWorkspace(
  * Create Business workspace via RPC.
  * Calls create_business_workspace() Postgres function (migration 0006).
  *
- * @param userId - Authenticated user ID
- * @param input - Workspace creation data
- * @returns Workspace object
  * @throws {DomainRuleError} If validation fails
  */
-export async function createBusinessWorkspace(
-  userId: string,
-  input: CreateWorkspaceInput,
-): Promise<Workspace> {
-  const supabase = await createServerClient();
+export async function createBusinessWorkspace(userId: string, input: CreateWorkspaceInput): Promise<Workspace> {
+  const supabase = await createSupabaseServerClient();
 
-  // Validate input
-  if (input.type !== 'business') {
-    throw new DomainRuleError(
-      'Only Business workspaces can be created via API',
-    );
+  if (input.type !== "business") {
+    throw new DomainRuleError("Only Business workspaces can be created via API");
   }
 
-  // Call RPC (handles workspace + membership + category seeding atomically)
-  const { data: workspaceId, error: rpcError } = await supabase.rpc(
-    'create_business_workspace',
-    {
-      p_name: input.name,
-    },
-  );
+  const { data: workspaceId, error: rpcError } = await supabase.rpc("create_business_workspace", {
+    p_name: input.name,
+  });
 
   if (rpcError) {
-    logger.error('workspace.service: RPC create_business_workspace failed', {
-      userId,
-      name: input.name,
-      error: rpcError.message,
-    });
+    log.error({ userId, name: input.name, err: rpcError.message }, "RPC create_business_workspace failed");
 
-    // Handle specific error cases
-    if (rpcError.message.includes('between 3 and 50 characters')) {
-      throw new DomainRuleError('Workspace name must be between 3 and 50 characters');
+    if (rpcError.message.includes("between 3 and 50 characters")) {
+      throw new DomainRuleError("Workspace name must be between 3 and 50 characters");
     }
 
-    throw new Error('Failed to create Business workspace');
+    throw new Error("Failed to create Business workspace");
   }
 
   if (!workspaceId) {
-    throw new Error('RPC did not return workspace ID');
+    throw new Error("RPC did not return workspace ID");
   }
 
-  // Fetch and return the created workspace
   return getWorkspace(workspaceId);
 }
 
@@ -147,40 +100,32 @@ export async function createBusinessWorkspace(
  * Update workspace settings (name only in MVP).
  * Caller must verify workspace admin before calling this.
  *
- * @param workspaceId - Workspace ID
- * @param input - Update data
- * @returns Updated workspace
+ * Only `name` is ever written here — `type` is deliberately never accepted
+ * (RN-05). Even if this were changed, migration 0007's
+ * `trg_prevent_workspace_type_change` trigger rejects any `type` mutation
+ * at the database layer regardless of caller.
+ *
  * @throws {NotFoundError} If workspace not found
  */
-export async function updateWorkspace(
-  workspaceId: string,
-  input: UpdateWorkspaceInput,
-): Promise<Workspace> {
-  const supabase = await createServerClient();
+export async function updateWorkspace(workspaceId: string, input: UpdateWorkspaceInput): Promise<Workspace> {
+  const supabase = await createSupabaseServerClient();
 
-  // Update (RLS policy ensures user is admin)
   const { data, error } = await supabase
-    .from('workspaces')
+    .from("workspaces")
     .update({
       name: input.name,
       updated_at: new Date().toISOString(),
     })
-    .eq('id', workspaceId)
+    .eq("id", workspaceId)
     .select()
     .single();
 
   if (error || !data) {
-    logger.error('workspace.service: update failed', {
-      workspaceId,
-      error: error?.message,
-    });
-    throw new NotFoundError('Workspace not found or update failed');
+    log.error({ workspaceId, err: error?.message }, "workspace update failed");
+    throw new NotFoundError("Workspace not found or update failed");
   }
 
-  logger.info('workspace.service: workspace updated', {
-    workspaceId,
-    name: input.name,
-  });
+  log.info({ workspaceId, name: input.name }, "workspace updated");
 
   return data as Workspace;
 }
@@ -188,17 +133,12 @@ export async function updateWorkspace(
 /**
  * List all members of a workspace.
  * Caller must verify workspace membership before calling this.
- *
- * @param workspaceId - Workspace ID
- * @returns Array of workspace members with user profile data
  */
-export async function listMembers(
-  workspaceId: string,
-): Promise<WorkspaceMember[]> {
-  const supabase = await createServerClient();
+export async function listMembers(workspaceId: string): Promise<WorkspaceMember[]> {
+  const supabase = await createSupabaseServerClient();
 
   const { data, error } = await supabase
-    .from('workspace_members')
+    .from("workspace_members")
     .select(
       `
       id,
@@ -211,95 +151,75 @@ export async function listMembers(
       )
     `,
     )
-    .eq('workspace_id', workspaceId)
-    .order('invited_at', { ascending: true });
+    .eq("workspace_id", workspaceId)
+    .order("invited_at", { ascending: true });
 
   if (error) {
-    logger.error('workspace.service: listMembers failed', {
-      workspaceId,
-      error: error.message,
-    });
-    throw new Error('Failed to list workspace members');
+    log.error({ workspaceId, err: error.message }, "listMembers failed");
+    throw new Error("Failed to list workspace members");
   }
 
-  // Flatten nested structure
-  return (
-    data?.map((item: any) => ({
-      id: item.id,
-      workspace_id: item.workspace_id,
-      user_id: item.user_id,
-      role: item.role,
-      invited_at: item.invited_at,
-      display_name: item.user_profiles?.display_name,
-    })) || []
-  );
+  type Row = {
+    id: string;
+    workspace_id: string;
+    user_id: string;
+    role: WorkspaceMember["role"];
+    invited_at: string;
+    user_profiles: { display_name: string | null } | null;
+  };
+
+  return ((data ?? []) as unknown as Row[]).map((item) => ({
+    id: item.id,
+    workspace_id: item.workspace_id,
+    user_id: item.user_id,
+    role: item.role,
+    invited_at: item.invited_at,
+    display_name: item.user_profiles?.display_name ?? undefined,
+  }));
 }
 
 /**
- * Invite a new member to workspace.
+ * Invite a new member to workspace by email.
  * Caller must verify workspace admin before calling this.
  *
- * @param workspaceId - Workspace ID
- * @param input - Invitation data (email, role)
- * @throws {NotFoundError} If user with email not found
- * @throws {ConflictError} If user is already a member
+ * Delegates to the `invite_workspace_member` SECURITY DEFINER RPC (migration
+ * 0007), which does the email → auth user lookup server-side (auth.users is
+ * not exposed over PostgREST, and this must never be done with the
+ * service-role key from request-scoped code). The RPC re-verifies the caller
+ * is an admin of the target workspace itself, so this stays safe even if
+ * called directly via PostgREST, bypassing this service and its route.
+ *
+ * @throws {NotFoundError} If no user exists with that email
+ * @throws {ConflictError} If the user is already a member
+ * @throws {AuthorizationError} If the caller is not an admin (defense in depth)
  */
-export async function inviteMember(
-  workspaceId: string,
-  input: InviteMemberInput,
-): Promise<WorkspaceMember> {
-  const supabase = await createServerClient();
+export async function inviteMember(workspaceId: string, input: InviteMemberInput): Promise<WorkspaceMember> {
+  const supabase = await createSupabaseServerClient();
 
-  // Step 1: Find user by email
-  const { data: authUser, error: userError } = await supabase
-    .from('user_profiles')
-    .select('id')
-    .eq('id', input.email) // In real app, need to query auth.users by email
-    .maybeSingle();
-
-  if (userError || !authUser) {
-    // In MVP, this is simplified
-    // Real implementation needs admin API to search auth.users by email
-    throw new NotFoundError('User not found with that email');
-  }
-
-  // Step 2: Check if already a member
-  const { data: existing } = await supabase
-    .from('workspace_members')
-    .select('id')
-    .eq('workspace_id', workspaceId)
-    .eq('user_id', authUser.id)
-    .maybeSingle();
-
-  if (existing) {
-    throw new ConflictError('User is already a member of this workspace');
-  }
-
-  // Step 3: Insert membership (RLS policy ensures caller is admin)
   const { data, error } = await supabase
-    .from('workspace_members')
-    .insert({
-      workspace_id: workspaceId,
-      user_id: authUser.id,
-      role: input.role,
+    .rpc("invite_workspace_member", {
+      p_workspace_id: workspaceId,
+      p_email: input.email,
+      p_role: input.role,
     })
-    .select()
     .single();
 
   if (error) {
-    logger.error('workspace.service: inviteMember failed', {
-      workspaceId,
-      email: input.email,
-      error: error.message,
-    });
-    throw new Error('Failed to invite member');
+    if (error.message.includes("USER_NOT_FOUND")) {
+      throw new NotFoundError("User not found with that email");
+    }
+    if (error.message.includes("ALREADY_MEMBER")) {
+      throw new ConflictError("User is already a member of this workspace");
+    }
+    if (error.message.includes("FORBIDDEN")) {
+      throw new AuthorizationError("Admin access required");
+    }
+
+    log.error({ workspaceId, email: input.email, err: error.message }, "inviteMember RPC failed");
+    throw new Error("Failed to invite member");
   }
 
-  logger.info('workspace.service: member invited', {
-    workspaceId,
-    userId: authUser.id,
-    role: input.role,
-  });
+  log.info({ workspaceId, role: input.role }, "member invited");
 
   return data as WorkspaceMember;
 }
@@ -308,92 +228,75 @@ export async function inviteMember(
  * Remove a member from workspace.
  * Caller must verify workspace admin before calling this.
  *
- * IMPORTANT: Blocked by prevent_last_admin_removal trigger (RN-17).
- * Cannot remove last admin — will throw LAST_ADMIN exception.
+ * IMPORTANT: Blocked by the `prevent_last_admin_removal` trigger (RN-17) —
+ * that trigger is the authoritative check; this function only translates its
+ * error into a friendly `DomainRuleError`.
  *
- * @param workspaceId - Workspace ID
  * @param memberId - workspace_members.id (not user_id)
  * @throws {DomainRuleError} If trying to remove last admin
  */
-export async function removeMember(
-  workspaceId: string,
-  memberId: string,
-): Promise<void> {
-  const supabase = await createServerClient();
+export async function removeMember(workspaceId: string, memberId: string): Promise<void> {
+  const supabase = await createSupabaseServerClient();
 
-  // Delete (trigger will prevent if last admin)
   const { error } = await supabase
-    .from('workspace_members')
+    .from("workspace_members")
     .delete()
-    .eq('id', memberId)
-    .eq('workspace_id', workspaceId); // double-filter for safety
+    .eq("id", memberId)
+    .eq("workspace_id", workspaceId); // double-filter for safety
 
   if (error) {
-    // Check if it's the LAST_ADMIN trigger error
-    if (error.message.includes('LAST_ADMIN')) {
-      logger.warn('workspace.service: attempted to remove last admin', {
-        workspaceId,
-        memberId,
-      });
-      throw new DomainRuleError(
-        'Cannot remove the last admin. Promote another member to admin first.',
-      );
+    if (error.message.includes("LAST_ADMIN")) {
+      log.warn({ workspaceId, memberId }, "attempted to remove last admin");
+      throw new DomainRuleError("Cannot remove the last admin. Promote another member to admin first.");
     }
 
-    logger.error('workspace.service: removeMember failed', {
-      workspaceId,
-      memberId,
-      error: error.message,
-    });
-    throw new Error('Failed to remove member');
+    log.error({ workspaceId, memberId, err: error.message }, "removeMember failed");
+    throw new Error("Failed to remove member");
   }
 
-  logger.info('workspace.service: member removed', {
-    workspaceId,
-    memberId,
-  });
+  log.info({ workspaceId, memberId }, "member removed");
 }
 
 /**
  * Change a member's role.
  * Caller must verify workspace admin before calling this.
  *
- * @param workspaceId - Workspace ID
- * @param memberId - workspace_members.id
- * @param input - New role
+ * IMPORTANT: Blocked by the `prevent_last_admin_demotion` trigger (RN-17) —
+ * demoting the sole remaining admin fails at the database layer even if this
+ * function is bypassed. The message-substring check below only exists to
+ * turn that DB error into the same friendly `DomainRuleError` shape used by
+ * `removeMember`.
  */
 export async function changeMemberRole(
   workspaceId: string,
   memberId: string,
   input: ChangeMemberRoleInput,
 ): Promise<WorkspaceMember> {
-  const supabase = await createServerClient();
+  const supabase = await createSupabaseServerClient();
 
-  // Update role (RLS policy ensures caller is admin)
   const { data, error } = await supabase
-    .from('workspace_members')
-    .update({
-      role: input.role,
-    })
-    .eq('id', memberId)
-    .eq('workspace_id', workspaceId) // double-filter for safety
+    .from("workspace_members")
+    .update({ role: input.role })
+    .eq("id", memberId)
+    .eq("workspace_id", workspaceId) // double-filter for safety
     .select()
     .single();
 
-  if (error || !data) {
-    logger.error('workspace.service: changeMemberRole failed', {
-      workspaceId,
-      memberId,
-      error: error?.message,
-    });
-    throw new NotFoundError('Member not found');
+  if (error) {
+    if (error.message.includes("LAST_ADMIN")) {
+      log.warn({ workspaceId, memberId }, "attempted to demote the last admin");
+      throw new DomainRuleError("Cannot demote the last admin. Promote another member to admin first.");
+    }
+
+    log.error({ workspaceId, memberId, err: error.message }, "changeMemberRole failed");
+    throw new NotFoundError("Member not found");
   }
 
-  logger.info('workspace.service: member role changed', {
-    workspaceId,
-    memberId,
-    newRole: input.role,
-  });
+  if (!data) {
+    throw new NotFoundError("Member not found");
+  }
+
+  log.info({ workspaceId, memberId, newRole: input.role }, "member role changed");
 
   return data as WorkspaceMember;
 }
