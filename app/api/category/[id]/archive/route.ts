@@ -3,98 +3,33 @@
  * Archive a category (soft delete)
  */
 
-import { NextRequest, NextResponse } from 'next/server';
-import { requireAuth } from '@/lib/server/auth/require-auth';
-import {
-  getCategory,
-  archiveCategory,
-} from '@/lib/server/category/category.service';
-import { verifyWorkspaceMembership } from '@/lib/server/shared/workspace-guard';
-import logger from '@/lib/server/shared/logger';
+import { NextResponse } from "next/server";
 
-export async function PATCH(
-  request: NextRequest,
-  { params }: { params: Promise<{ id: string }> },
-) {
-  try {
-    const { id: categoryId } = await params;
+import { requireAuth, withErrorHandling } from "@/lib/server/shared/api-helpers";
+import { getCategory, archiveCategory } from "@/lib/server/category/category.service";
+import { verifyWorkspaceMembership } from "@/lib/server/shared/workspace-guard";
+import type { ApiResponse } from "@/types/api";
+import type { Category } from "@/types/category";
 
-    // Authentication
-    const user = await requireAuth();
+export async function PATCH(request: Request, { params }: { params: Promise<{ id: string }> }) {
+  const authResult = await requireAuth();
+  if (authResult instanceof NextResponse) return authResult;
+  const { user } = authResult;
 
-    // Fetch category first to get workspace_id
-    const existingCategory = await getCategory(categoryId);
+  const { id: categoryId } = await params;
 
-    // Authorization: verify workspace membership
-    await verifyWorkspaceMembership(user.id, existingCategory.workspace_id);
+  return withErrorHandling(
+    async () => {
+      // Fetch category first to get its (real, server-derived) workspace_id
+      // — never trust a client-supplied workspace_id for this check.
+      const existingCategory = await getCategory(categoryId);
 
-    // Archive category
-    const category = await archiveCategory(categoryId);
+      await verifyWorkspaceMembership(user.id, existingCategory.workspace_id);
 
-    logger.info('api.category: category archived', {
-      userId: user.id,
-      workspaceId: existingCategory.workspace_id,
-      categoryId,
-    });
-
-    return NextResponse.json({
-      data: category,
-      error: null,
-    });
-  } catch (error: any) {
-    logger.error('api.category: archive failed', {
-      categoryId: (await params).id,
-      error: error.message,
-    });
-
-    if (error.constructor.name === 'AuthenticationError') {
-      return NextResponse.json(
-        {
-          data: null,
-          error: {
-            code: 'AUTHENTICATION_ERROR',
-            message: 'Authentication required',
-          },
-        },
-        { status: 401 },
-      );
-    }
-
-    if (error.constructor.name === 'NotFoundError') {
-      return NextResponse.json(
-        {
-          data: null,
-          error: {
-            code: 'NOT_FOUND',
-            message: 'Category not found',
-          },
-        },
-        { status: 404 },
-      );
-    }
-
-    if (error.constructor.name === 'DomainRuleError') {
-      return NextResponse.json(
-        {
-          data: null,
-          error: {
-            code: 'DOMAIN_RULE_ERROR',
-            message: error.message,
-          },
-        },
-        { status: 422 },
-      );
-    }
-
-    return NextResponse.json(
-      {
-        data: null,
-        error: {
-          code: 'INTERNAL_ERROR',
-          message: 'Failed to archive category',
-        },
-      },
-      { status: 500 },
-    );
-  }
+      const category = await archiveCategory(categoryId);
+      const responseBody: ApiResponse<Category> = { data: category, error: null };
+      return NextResponse.json(responseBody, { status: 200 });
+    },
+    { userId: user.id, categoryId, route: "PATCH /api/category/[id]/archive" },
+  );
 }

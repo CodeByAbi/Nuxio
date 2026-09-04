@@ -3,107 +3,45 @@
  * Remove a member from workspace
  */
 
-import { NextRequest, NextResponse } from 'next/server';
-import { requireAuth } from '@/lib/server/auth/require-auth';
-import { verifyWorkspaceAdmin } from '@/lib/server/shared/workspace-guard';
-import { removeMember } from '@/lib/server/workspace/workspace.service';
-import logger from '@/lib/server/shared/logger';
+import { NextResponse } from "next/server";
 
-export async function DELETE(
-  request: NextRequest,
-  { params }: { params: Promise<{ id: string; memberId: string }> },
-) {
-  try {
-    const { id: workspaceId, memberId } = await params;
+import { requireAuth, withErrorHandling } from "@/lib/server/shared/api-helpers";
+import { verifyWorkspaceAdmin } from "@/lib/server/shared/workspace-guard";
+import { removeMember } from "@/lib/server/workspace/workspace.service";
+import { DomainRuleError } from "@/lib/server/shared/errors";
+import type { ApiResponse } from "@/types/api";
+import { ErrorCode } from "@/types/errors";
 
-    // Authentication
-    const user = await requireAuth();
+export async function DELETE(request: Request, { params }: { params: Promise<{ id: string; memberId: string }> }) {
+  const authResult = await requireAuth();
+  if (authResult instanceof NextResponse) return authResult;
+  const { user } = authResult;
 
-    // Authorization: verify workspace admin
-    await verifyWorkspaceAdmin(user.id, workspaceId);
+  const { id: workspaceId, memberId } = await params;
 
-    // Remove member
-    await removeMember(workspaceId, memberId);
+  return withErrorHandling(
+    async () => {
+      await verifyWorkspaceAdmin(user.id, workspaceId);
 
-    logger.info('api.workspace.members: member removed', {
-      userId: user.id,
-      workspaceId,
-      memberId,
-    });
+      try {
+        await removeMember(workspaceId, memberId);
+      } catch (err) {
+        // RN-17: surface the domain-specific `LAST_ADMIN` code the Roadmap
+        // contracts for on this endpoint, rather than the generic
+        // DOMAIN_RULE_ERROR code withErrorHandling would otherwise use.
+        if (err instanceof DomainRuleError) {
+          const body: ApiResponse<never> = {
+            data: null,
+            error: { code: ErrorCode.LAST_ADMIN, message: err.message },
+          };
+          return NextResponse.json(body, { status: 422 });
+        }
+        throw err;
+      }
 
-    return NextResponse.json({
-      data: { success: true },
-      error: null,
-    });
-  } catch (error: any) {
-    logger.error('api.workspace.members: DELETE failed', {
-      workspaceId: (await params).id,
-      memberId: (await params).memberId,
-      error: error.message,
-    });
-
-    if (error.constructor.name === 'AuthenticationError') {
-      return NextResponse.json(
-        {
-          data: null,
-          error: {
-            code: 'AUTHENTICATION_ERROR',
-            message: 'Authentication required',
-          },
-        },
-        { status: 401 },
-      );
-    }
-
-    if (error.constructor.name === 'AuthorizationError') {
-      return NextResponse.json(
-        {
-          data: null,
-          error: {
-            code: 'AUTHORIZATION_ERROR',
-            message: 'Admin access required',
-          },
-        },
-        { status: 403 },
-      );
-    }
-
-    if (error.constructor.name === 'NotFoundError') {
-      return NextResponse.json(
-        {
-          data: null,
-          error: {
-            code: 'NOT_FOUND',
-            message: 'Workspace or member not found',
-          },
-        },
-        { status: 404 },
-      );
-    }
-
-    // Handle RN-17: cannot remove last admin
-    if (error.constructor.name === 'DomainRuleError') {
-      return NextResponse.json(
-        {
-          data: null,
-          error: {
-            code: 'LAST_ADMIN',
-            message: error.message,
-          },
-        },
-        { status: 422 },
-      );
-    }
-
-    return NextResponse.json(
-      {
-        data: null,
-        error: {
-          code: 'INTERNAL_ERROR',
-          message: 'Failed to remove member',
-        },
-      },
-      { status: 500 },
-    );
-  }
+      const responseBody: ApiResponse<{ success: true }> = { data: { success: true }, error: null };
+      return NextResponse.json(responseBody, { status: 200 });
+    },
+    { userId: user.id, workspaceId, memberId, route: "DELETE /api/workspace/[id]/members/[memberId]" },
+  );
 }

@@ -3,188 +3,78 @@
  * Get or update workspace by ID
  */
 
-import { NextRequest, NextResponse } from 'next/server';
-import { requireAuth } from '@/lib/server/auth/require-auth';
-import {
-  verifyWorkspaceMembership,
-  verifyWorkspaceAdmin,
-} from '@/lib/server/shared/workspace-guard';
-import {
-  getWorkspace,
-  updateWorkspace,
-} from '@/lib/server/workspace/workspace.service';
-import { updateWorkspaceSchema } from '@/types/workspace';
-import logger from '@/lib/server/shared/logger';
+import { NextResponse } from "next/server";
+
+import { requireAuth, withErrorHandling } from "@/lib/server/shared/api-helpers";
+import { verifyWorkspaceMembership, verifyWorkspaceAdmin } from "@/lib/server/shared/workspace-guard";
+import { getWorkspace, updateWorkspace } from "@/lib/server/workspace/workspace.service";
+import { updateWorkspaceSchema } from "@/types/workspace";
+import { ValidationError } from "@/lib/server/shared/errors";
+import type { ApiResponse } from "@/types/api";
+import type { Workspace } from "@/types/workspace";
+import { ErrorCode } from "@/types/errors";
 
 /**
  * GET /api/workspace/[id]
  */
-export async function GET(
-  request: NextRequest,
-  { params }: { params: Promise<{ id: string }> },
-) {
-  try {
-    const { id: workspaceId } = await params;
+export async function GET(request: Request, { params }: { params: Promise<{ id: string }> }) {
+  const authResult = await requireAuth();
+  if (authResult instanceof NextResponse) return authResult;
+  const { user } = authResult;
 
-    // Authentication
-    const user = await requireAuth();
+  const { id: workspaceId } = await params;
 
-    // Authorization: verify workspace membership
-    await verifyWorkspaceMembership(user.id, workspaceId);
+  return withErrorHandling(
+    async () => {
+      await verifyWorkspaceMembership(user.id, workspaceId);
 
-    // Fetch workspace
-    const workspace = await getWorkspace(workspaceId);
-
-    return NextResponse.json({
-      data: workspace,
-      error: null,
-    });
-  } catch (error: any) {
-    logger.error('api.workspace: GET failed', {
-      workspaceId: (await params).id,
-      error: error.message,
-    });
-
-    if (error.constructor.name === 'AuthenticationError') {
-      return NextResponse.json(
-        {
-          data: null,
-          error: {
-            code: 'AUTHENTICATION_ERROR',
-            message: 'Authentication required',
-          },
-        },
-        { status: 401 },
-      );
-    }
-
-    if (error.constructor.name === 'NotFoundError') {
-      return NextResponse.json(
-        {
-          data: null,
-          error: {
-            code: 'NOT_FOUND',
-            message: 'Workspace not found',
-          },
-        },
-        { status: 404 },
-      );
-    }
-
-    return NextResponse.json(
-      {
-        data: null,
-        error: {
-          code: 'INTERNAL_ERROR',
-          message: 'Failed to fetch workspace',
-        },
-      },
-      { status: 500 },
-    );
-  }
+      const workspace = await getWorkspace(workspaceId);
+      const responseBody: ApiResponse<Workspace> = { data: workspace, error: null };
+      return NextResponse.json(responseBody, { status: 200 });
+    },
+    { userId: user.id, workspaceId, route: "GET /api/workspace/[id]" },
+  );
 }
 
 /**
  * PATCH /api/workspace/[id]
  * Update workspace settings (admin only)
  */
-export async function PATCH(
-  request: NextRequest,
-  { params }: { params: Promise<{ id: string }> },
-) {
-  try {
-    const { id: workspaceId } = await params;
+export async function PATCH(request: Request, { params }: { params: Promise<{ id: string }> }) {
+  const authResult = await requireAuth();
+  if (authResult instanceof NextResponse) return authResult;
+  const { user } = authResult;
 
-    // Authentication
-    const user = await requireAuth();
+  const { id: workspaceId } = await params;
 
-    // Authorization: verify workspace admin
-    await verifyWorkspaceAdmin(user.id, workspaceId);
+  return withErrorHandling(
+    async () => {
+      await verifyWorkspaceAdmin(user.id, workspaceId);
 
-    // Parse and validate body
-    const body = await request.json();
-    const validatedData = updateWorkspaceSchema.parse(body);
-
-    // Update workspace
-    const workspace = await updateWorkspace(workspaceId, validatedData);
-
-    logger.info('api.workspace: workspace updated', {
-      userId: user.id,
-      workspaceId,
-    });
-
-    return NextResponse.json({
-      data: workspace,
-      error: null,
-    });
-  } catch (error: any) {
-    logger.error('api.workspace: PATCH failed', {
-      workspaceId: (await params).id,
-      error: error.message,
-    });
-
-    if (error.name === 'ZodError') {
-      return NextResponse.json(
-        {
+      let body: unknown;
+      try {
+        body = await request.json();
+      } catch {
+        const errorBody: ApiResponse<never> = {
           data: null,
-          error: {
-            code: 'VALIDATION_ERROR',
-            message: 'Invalid request data',
-            details: error.errors,
-          },
-        },
-        { status: 400 },
-      );
-    }
+          error: { code: ErrorCode.VALIDATION_ERROR, message: "Request body must be valid JSON." },
+        };
+        return NextResponse.json(errorBody, { status: 400 });
+      }
 
-    if (error.constructor.name === 'AuthenticationError') {
-      return NextResponse.json(
-        {
-          data: null,
-          error: {
-            code: 'AUTHENTICATION_ERROR',
-            message: 'Authentication required',
-          },
-        },
-        { status: 401 },
-      );
-    }
+      const parsed = updateWorkspaceSchema.safeParse(body);
+      if (!parsed.success) {
+        const fieldErrors = parsed.error.issues.map((e) => ({
+          field: e.path.join(".") || "name",
+          message: e.message,
+        }));
+        throw new ValidationError("Validation failed.", fieldErrors);
+      }
 
-    if (error.constructor.name === 'AuthorizationError') {
-      return NextResponse.json(
-        {
-          data: null,
-          error: {
-            code: 'AUTHORIZATION_ERROR',
-            message: 'Admin access required',
-          },
-        },
-        { status: 403 },
-      );
-    }
-
-    if (error.constructor.name === 'NotFoundError') {
-      return NextResponse.json(
-        {
-          data: null,
-          error: {
-            code: 'NOT_FOUND',
-            message: 'Workspace not found',
-          },
-        },
-        { status: 404 },
-      );
-    }
-
-    return NextResponse.json(
-      {
-        data: null,
-        error: {
-          code: 'INTERNAL_ERROR',
-          message: 'Failed to update workspace',
-        },
-      },
-      { status: 500 },
-    );
-  }
+      const workspace = await updateWorkspace(workspaceId, parsed.data);
+      const responseBody: ApiResponse<Workspace> = { data: workspace, error: null };
+      return NextResponse.json(responseBody, { status: 200 });
+    },
+    { userId: user.id, workspaceId, route: "PATCH /api/workspace/[id]" },
+  );
 }

@@ -3,206 +3,79 @@
  * List or invite workspace members
  */
 
-import { NextRequest, NextResponse } from 'next/server';
-import { requireAuth } from '@/lib/server/auth/require-auth';
-import {
-  verifyWorkspaceMembership,
-  verifyWorkspaceAdmin,
-} from '@/lib/server/shared/workspace-guard';
-import {
-  listMembers,
-  inviteMember,
-} from '@/lib/server/workspace/workspace.service';
-import { inviteMemberSchema } from '@/types/workspace';
-import logger from '@/lib/server/shared/logger';
+import { NextResponse } from "next/server";
+
+import { requireAuth, withErrorHandling } from "@/lib/server/shared/api-helpers";
+import { verifyWorkspaceMembership, verifyWorkspaceAdmin } from "@/lib/server/shared/workspace-guard";
+import { listMembers, inviteMember } from "@/lib/server/workspace/workspace.service";
+import { inviteMemberSchema } from "@/types/workspace";
+import { ValidationError } from "@/lib/server/shared/errors";
+import type { ApiResponse } from "@/types/api";
+import type { WorkspaceMember } from "@/types/workspace";
+import { ErrorCode } from "@/types/errors";
 
 /**
  * GET /api/workspace/[id]/members
  * List all members of workspace
  */
-export async function GET(
-  request: NextRequest,
-  { params }: { params: Promise<{ id: string }> },
-) {
-  try {
-    const { id: workspaceId } = await params;
+export async function GET(request: Request, { params }: { params: Promise<{ id: string }> }) {
+  const authResult = await requireAuth();
+  if (authResult instanceof NextResponse) return authResult;
+  const { user } = authResult;
 
-    // Authentication
-    const user = await requireAuth();
+  const { id: workspaceId } = await params;
 
-    // Authorization: verify workspace membership
-    await verifyWorkspaceMembership(user.id, workspaceId);
+  return withErrorHandling(
+    async () => {
+      await verifyWorkspaceMembership(user.id, workspaceId);
 
-    // Fetch members
-    const members = await listMembers(workspaceId);
-
-    return NextResponse.json({
-      data: members,
-      error: null,
-    });
-  } catch (error: any) {
-    logger.error('api.workspace.members: GET failed', {
-      workspaceId: (await params).id,
-      error: error.message,
-    });
-
-    if (error.constructor.name === 'AuthenticationError') {
-      return NextResponse.json(
-        {
-          data: null,
-          error: {
-            code: 'AUTHENTICATION_ERROR',
-            message: 'Authentication required',
-          },
-        },
-        { status: 401 },
-      );
-    }
-
-    if (error.constructor.name === 'NotFoundError') {
-      return NextResponse.json(
-        {
-          data: null,
-          error: {
-            code: 'NOT_FOUND',
-            message: 'Workspace not found',
-          },
-        },
-        { status: 404 },
-      );
-    }
-
-    return NextResponse.json(
-      {
-        data: null,
-        error: {
-          code: 'INTERNAL_ERROR',
-          message: 'Failed to list members',
-        },
-      },
-      { status: 500 },
-    );
-  }
+      const members = await listMembers(workspaceId);
+      const responseBody: ApiResponse<WorkspaceMember[]> = { data: members, error: null };
+      return NextResponse.json(responseBody, { status: 200 });
+    },
+    { userId: user.id, workspaceId, route: "GET /api/workspace/[id]/members" },
+  );
 }
 
 /**
  * POST /api/workspace/[id]/members
  * Invite a new member (admin only)
  */
-export async function POST(
-  request: NextRequest,
-  { params }: { params: Promise<{ id: string }> },
-) {
-  try {
-    const { id: workspaceId } = await params;
+export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
+  const authResult = await requireAuth();
+  if (authResult instanceof NextResponse) return authResult;
+  const { user } = authResult;
 
-    // Authentication
-    const user = await requireAuth();
+  const { id: workspaceId } = await params;
 
-    // Authorization: verify workspace admin
-    await verifyWorkspaceAdmin(user.id, workspaceId);
+  return withErrorHandling(
+    async () => {
+      await verifyWorkspaceAdmin(user.id, workspaceId);
 
-    // Parse and validate body
-    const body = await request.json();
-    const validatedData = inviteMemberSchema.parse(body);
-
-    // Invite member
-    const member = await inviteMember(workspaceId, validatedData);
-
-    logger.info('api.workspace.members: member invited', {
-      userId: user.id,
-      workspaceId,
-      invitedEmail: validatedData.email,
-    });
-
-    return NextResponse.json(
-      {
-        data: member,
-        error: null,
-      },
-      { status: 201 },
-    );
-  } catch (error: any) {
-    logger.error('api.workspace.members: POST failed', {
-      workspaceId: (await params).id,
-      error: error.message,
-    });
-
-    if (error.name === 'ZodError') {
-      return NextResponse.json(
-        {
+      let body: unknown;
+      try {
+        body = await request.json();
+      } catch {
+        const errorBody: ApiResponse<never> = {
           data: null,
-          error: {
-            code: 'VALIDATION_ERROR',
-            message: 'Invalid request data',
-            details: error.errors,
-          },
-        },
-        { status: 400 },
-      );
-    }
+          error: { code: ErrorCode.VALIDATION_ERROR, message: "Request body must be valid JSON." },
+        };
+        return NextResponse.json(errorBody, { status: 400 });
+      }
 
-    if (error.constructor.name === 'AuthenticationError') {
-      return NextResponse.json(
-        {
-          data: null,
-          error: {
-            code: 'AUTHENTICATION_ERROR',
-            message: 'Authentication required',
-          },
-        },
-        { status: 401 },
-      );
-    }
+      const parsed = inviteMemberSchema.safeParse(body);
+      if (!parsed.success) {
+        const fieldErrors = parsed.error.issues.map((e) => ({
+          field: e.path.join(".") || "email",
+          message: e.message,
+        }));
+        throw new ValidationError("Validation failed.", fieldErrors);
+      }
 
-    if (error.constructor.name === 'AuthorizationError') {
-      return NextResponse.json(
-        {
-          data: null,
-          error: {
-            code: 'AUTHORIZATION_ERROR',
-            message: 'Admin access required',
-          },
-        },
-        { status: 403 },
-      );
-    }
-
-    if (error.constructor.name === 'NotFoundError') {
-      return NextResponse.json(
-        {
-          data: null,
-          error: {
-            code: 'NOT_FOUND',
-            message: error.message,
-          },
-        },
-        { status: 404 },
-      );
-    }
-
-    if (error.constructor.name === 'ConflictError') {
-      return NextResponse.json(
-        {
-          data: null,
-          error: {
-            code: 'CONFLICT',
-            message: error.message,
-          },
-        },
-        { status: 409 },
-      );
-    }
-
-    return NextResponse.json(
-      {
-        data: null,
-        error: {
-          code: 'INTERNAL_ERROR',
-          message: 'Failed to invite member',
-        },
-      },
-      { status: 500 },
-    );
-  }
+      const member = await inviteMember(workspaceId, parsed.data);
+      const responseBody: ApiResponse<WorkspaceMember> = { data: member, error: null };
+      return NextResponse.json(responseBody, { status: 201 });
+    },
+    { userId: user.id, workspaceId, route: "POST /api/workspace/[id]/members" },
+  );
 }
