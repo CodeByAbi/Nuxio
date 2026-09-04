@@ -7,7 +7,7 @@
  * Shows dropdown to switch between workspaces.
  */
 
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { useRouter, usePathname, useSearchParams } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import {
@@ -36,29 +36,13 @@ export function WorkspaceSwitcher({ currentWorkspaceId }: WorkspaceSwitcherProps
   const pathname = usePathname();
   const searchParams = useSearchParams();
   
-  const [workspaces, setWorkspaces] = useState<WorkspaceInfo[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
+  // TODO(Phase 4): there is no GET /api/workspace list endpoint yet, so this
+  // always stays empty and the switcher stays hidden (see the
+  // `workspaces.length <= 1` guard below). Wiring this up is frontend
+  // feature work tracked separately from this backend/DB repair — see
+  // docs/Phase-3-Workspace-Category.md "Known Gaps".
+  const [workspaces] = useState<WorkspaceInfo[]>([]);
   const [isOpen, setIsOpen] = useState(false);
-
-  useEffect(() => {
-    fetchWorkspaces();
-  }, []);
-
-  const fetchWorkspaces = async () => {
-    try {
-      // Call listUserWorkspaces via a dedicated API endpoint
-      // For now, we'll use a client-side approach
-      // In production, create GET /api/workspace/list endpoint
-      
-      // Placeholder: In real implementation, this would fetch from API
-      // For Phase 3, we'll skip the actual API call since we need the endpoint
-      
-      setIsLoading(false);
-    } catch (err) {
-      console.error('Failed to fetch workspaces:', err);
-      setIsLoading(false);
-    }
-  };
 
   const handleSwitchWorkspace = (workspaceId: string) => {
     // Update query param workspace_id in current route

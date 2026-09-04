@@ -31,34 +31,31 @@ export default function WorkspaceSettingsPage() {
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
 
-  // Fetch workspace data
+  // Fetch workspace data. Written as a .then()/.catch() chain rather than an
+  // async function called from the effect body — calling a named async
+  // helper that eventually calls setState from inside a useEffect gets
+  // flagged by the React Compiler's set-state-in-effect check even though
+  // the actual setState calls happen after an await; see the identical
+  // pattern in app/(app)/profile/page.tsx.
   useEffect(() => {
-    if (!workspaceId) {
-      setError('Workspace ID tidak ditemukan');
-      setIsLoading(false);
-      return;
-    }
+    if (!workspaceId) return;
 
-    fetchWorkspace();
+    fetch(`/api/workspace/${workspaceId}`)
+      .then(async (response) => {
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error(data.error?.message || 'Gagal memuat workspace');
+        }
+        setWorkspace(data.data);
+        setName(data.data.name);
+      })
+      .catch((err: unknown) => {
+        setError(err instanceof Error ? err.message : 'Gagal memuat workspace');
+      })
+      .finally(() => {
+        setIsLoading(false);
+      });
   }, [workspaceId]);
-
-  const fetchWorkspace = async () => {
-    try {
-      const response = await fetch(`/api/workspace/${workspaceId}`);
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(data.error?.message || 'Gagal memuat workspace');
-      }
-
-      setWorkspace(data.data);
-      setName(data.data.name);
-    } catch (err: any) {
-      setError(err.message);
-    } finally {
-      setIsLoading(false);
-    }
-  };
 
   const handleSave = async () => {
     if (!workspaceId || !name.trim()) return;
@@ -93,12 +90,20 @@ export default function WorkspaceSettingsPage() {
       
       // Hide success message after 2.5 seconds
       setTimeout(() => setSuccess(false), 2500);
-    } catch (err: any) {
-      setError(err.message);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Gagal menyimpan perubahan');
     } finally {
       setIsSaving(false);
     }
   };
+
+  if (!workspaceId) {
+    return (
+      <div className="container max-w-2xl py-8">
+        <Alert variant="destructive">Workspace ID tidak ditemukan</Alert>
+      </div>
+    );
+  }
 
   if (isLoading) {
     return (

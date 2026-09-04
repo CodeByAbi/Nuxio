@@ -12,7 +12,7 @@
  * - Change member roles
  */
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -39,18 +39,9 @@ export default function WorkspaceMembersPage() {
   const [inviteEmail, setInviteEmail] = useState('');
   const [inviteRole, setInviteRole] = useState<'admin' | 'member'>('member');
   const [isInviting, setIsInviting] = useState(false);
+  const [removeTarget, setRemoveTarget] = useState<{ id: string; name: string } | null>(null);
 
-  useEffect(() => {
-    if (!workspaceId) {
-      setError('Workspace ID tidak ditemukan');
-      setIsLoading(false);
-      return;
-    }
-
-    fetchData();
-  }, [workspaceId]);
-
-  const fetchData = async () => {
+  const fetchData = useCallback(async () => {
     try {
       // Fetch workspace to check type
       const workspaceRes = await fetch(`/api/workspace/${workspaceId}`);
@@ -78,12 +69,56 @@ export default function WorkspaceMembersPage() {
       }
 
       setMembers(membersData.data);
-    } catch (err: any) {
-      setError(err.message);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Gagal memuat data');
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [workspaceId, router]);
+
+  // Mount-time load, written as a .then() chain rather than calling the
+  // fetchData() helper above — calling a named async function that
+  // eventually calls setState from inside a useEffect gets flagged by the
+  // React Compiler's set-state-in-effect check even though the actual
+  // setState calls happen after an await; see the identical pattern in
+  // app/(app)/profile/page.tsx. fetchData() itself stays available for the
+  // post-mutation refreshes below (handleInvite/handleRemoveMember), which
+  // run from event handlers, not effects.
+  useEffect(() => {
+    if (!workspaceId) return;
+
+    fetch(`/api/workspace/${workspaceId}`)
+      .then(async (workspaceRes) => {
+        const workspaceData = await workspaceRes.json();
+        if (!workspaceRes.ok) {
+          throw new Error(workspaceData.error?.message || 'Gagal memuat workspace');
+        }
+
+        const ws = workspaceData.data;
+        setWorkspace(ws);
+
+        if (ws.type === 'personal') {
+          router.push(`/workspace/settings?workspace_id=${workspaceId}`);
+          return null;
+        }
+
+        const membersRes = await fetch(`/api/workspace/${workspaceId}/members`);
+        const membersData = await membersRes.json();
+        if (!membersRes.ok) {
+          throw new Error(membersData.error?.message || 'Gagal memuat anggota');
+        }
+        return membersData.data;
+      })
+      .then((members) => {
+        if (members) setMembers(members);
+      })
+      .catch((err: unknown) => {
+        setError(err instanceof Error ? err.message : 'Gagal memuat data');
+      })
+      .finally(() => {
+        setIsLoading(false);
+      });
+  }, [workspaceId, router]);
 
   const handleInvite = async () => {
     if (!workspaceId || !inviteEmail.trim()) return;
@@ -118,14 +153,14 @@ export default function WorkspaceMembersPage() {
       setInviteEmail('');
       setInviteRole('member');
       fetchData();
-    } catch (err: any) {
-      setError(err.message);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Gagal mengundang anggota');
     } finally {
       setIsInviting(false);
     }
   };
 
-  const handleRemoveMember = async (memberId: string, memberName: string) => {
+  const handleRemoveMember = async (memberId: string) => {
     if (!workspaceId) return;
 
     setError(null);
@@ -147,10 +182,18 @@ export default function WorkspaceMembersPage() {
 
       // Success - refresh members list
       fetchData();
-    } catch (err: any) {
-      setError(err.message);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Gagal menghapus anggota');
     }
   };
+
+  if (!workspaceId) {
+    return (
+      <div className="container max-w-3xl py-8">
+        <Alert variant="destructive">Workspace ID tidak ditemukan</Alert>
+      </div>
+    );
+  }
 
   if (isLoading) {
     return (
@@ -289,21 +332,17 @@ export default function WorkspaceMembersPage() {
                   </span>
                   
                   {/* Remove Button */}
-                  <ConfirmDialog
-                    title="Hapus Anggota?"
-                    description={`Apakah Anda yakin ingin menghapus ${member.display_name || 'anggota ini'}? Tindakan ini tidak dapat dibatalkan.`}
-                    onConfirm={() => handleRemoveMember(member.id, member.display_name || 'User')}
-                    trigger={
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        className="text-critical hover:text-critical"
-                        disabled={member.role === 'admin' && adminCount === 1}
-                      >
-                        Hapus
-                      </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="text-critical hover:text-critical"
+                    disabled={member.role === 'admin' && adminCount === 1}
+                    onClick={() =>
+                      setRemoveTarget({ id: member.id, name: member.display_name || 'anggota ini' })
                     }
-                  />
+                  >
+                    Hapus
+                  </Button>
                 </div>
               </div>
             ))}
@@ -320,10 +359,27 @@ export default function WorkspaceMembersPage() {
       {/* Info Note */}
       <Alert>
         <p className="text-sm">
-          💡 <strong>Catatan:</strong> Admin terakhir tidak dapat dihapus. 
+          💡 <strong>Catatan:</strong> Admin terakhir tidak dapat dihapus.
           Promosikan anggota lain ke admin terlebih dahulu jika ingin menghapus diri sendiri.
         </p>
       </Alert>
+
+      <ConfirmDialog
+        open={removeTarget !== null}
+        onOpenChange={(open) => {
+          if (!open) setRemoveTarget(null);
+        }}
+        title="Hapus Anggota?"
+        description={
+          removeTarget
+            ? `Apakah Anda yakin ingin menghapus ${removeTarget.name}? Tindakan ini tidak dapat dibatalkan.`
+            : ''
+        }
+        variant="destructive"
+        onConfirm={() => {
+          if (removeTarget) handleRemoveMember(removeTarget.id);
+        }}
+      />
     </div>
   );
 }

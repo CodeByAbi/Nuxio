@@ -12,7 +12,7 @@ import { useSearchParams } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Alert } from '@/components/ui/alert';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
@@ -34,11 +34,41 @@ export default function CategoryPage() {
   const [newCategoryName, setNewCategoryName] = useState('');
   const [newCategoryDirection, setNewCategoryDirection] = useState<CategoryDirection>('expense');
   const [isCreating, setIsCreating] = useState(false);
+  const [archiveTarget, setArchiveTarget] = useState<{ id: string; name: string } | null>(null);
 
+  // Written as a .then()/.catch() chain rather than calling the
+  // fetchCategories() helper below — calling a named async function that
+  // eventually calls setState from inside a useEffect gets flagged by the
+  // React Compiler's set-state-in-effect check even though the actual
+  // setState calls happen after an await; see the identical pattern in
+  // app/(app)/profile/page.tsx. fetchCategories() itself stays available for
+  // the post-mutation refreshes below (handleCreate/handleArchive), which
+  // run from event handlers, not effects.
   useEffect(() => {
-    if (workspaceId) {
-      fetchCategories();
+    if (!workspaceId) return;
+
+    const params = new URLSearchParams({ workspace_id: workspaceId });
+    if (filter !== 'all') {
+      params.append('direction', filter);
     }
+    if (includeArchived) {
+      params.append('include_archived', 'true');
+    }
+
+    fetch(`/api/category?${params.toString()}`)
+      .then(async (response) => {
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error(data.error?.message || 'Gagal memuat kategori');
+        }
+        setCategories(data.data);
+      })
+      .catch((err: unknown) => {
+        setError(err instanceof Error ? err.message : 'Gagal memuat kategori');
+      })
+      .finally(() => {
+        setIsLoading(false);
+      });
   }, [workspaceId, filter, includeArchived]);
 
   const fetchCategories = async () => {
@@ -62,8 +92,8 @@ export default function CategoryPage() {
       }
 
       setCategories(data.data);
-    } catch (err: any) {
-      setError(err.message);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Gagal memuat kategori');
     } finally {
       setIsLoading(false);
     }
@@ -100,14 +130,14 @@ export default function CategoryPage() {
       setNewCategoryName('');
       setNewCategoryDirection('expense');
       fetchCategories();
-    } catch (err: any) {
-      setError(err.message);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Gagal membuat kategori');
     } finally {
       setIsCreating(false);
     }
   };
 
-  const handleArchive = async (categoryId: string, categoryName: string) => {
+  const handleArchive = async (categoryId: string) => {
     if (!workspaceId) return;
 
     setError(null);
@@ -128,8 +158,8 @@ export default function CategoryPage() {
 
       // Success - refresh
       fetchCategories();
-    } catch (err: any) {
-      setError(err.message);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Gagal mengarsipkan kategori');
     }
   };
 
@@ -310,16 +340,13 @@ export default function CategoryPage() {
                       )}
                     </div>
                     {!category.is_default && !category.archived && (
-                      <ConfirmDialog
-                        title="Arsipkan Kategori?"
-                        description={`Kategori "${category.name}" akan diarsipkan. Transaksi yang sudah ada tetap menggunakan kategori ini.`}
-                        onConfirm={() => handleArchive(category.id, category.name)}
-                        trigger={
-                          <Button variant="outline" size="sm">
-                            Arsipkan
-                          </Button>
-                        }
-                      />
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setArchiveTarget({ id: category.id, name: category.name })}
+                      >
+                        Arsipkan
+                      </Button>
                     )}
                   </div>
                 ))}
@@ -362,16 +389,13 @@ export default function CategoryPage() {
                       )}
                     </div>
                     {!category.is_default && !category.archived && (
-                      <ConfirmDialog
-                        title="Arsipkan Kategori?"
-                        description={`Kategori "${category.name}" akan diarsipkan. Transaksi yang sudah ada tetap menggunakan kategori ini.`}
-                        onConfirm={() => handleArchive(category.id, category.name)}
-                        trigger={
-                          <Button variant="outline" size="sm">
-                            Arsipkan
-                          </Button>
-                        }
-                      />
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setArchiveTarget({ id: category.id, name: category.name })}
+                      >
+                        Arsipkan
+                      </Button>
                     )}
                   </div>
                 ))}
@@ -389,10 +413,28 @@ export default function CategoryPage() {
       {/* Info Note */}
       <Alert>
         <p className="text-sm">
-          💡 <strong>Catatan:</strong> Kategori default tidak dapat diarsipkan. 
+          💡 <strong>Catatan:</strong> Kategori default tidak dapat diarsipkan.
           Kategori yang diarsipkan masih tersimpan di transaksi historis.
         </p>
       </Alert>
+
+      <ConfirmDialog
+        open={archiveTarget !== null}
+        onOpenChange={(open) => {
+          if (!open) setArchiveTarget(null);
+        }}
+        title="Arsipkan Kategori?"
+        description={
+          archiveTarget
+            ? `Kategori "${archiveTarget.name}" akan diarsipkan. Transaksi yang sudah ada tetap menggunakan kategori ini.`
+            : ''
+        }
+        confirmLabel="Arsipkan"
+        variant="default"
+        onConfirm={() => {
+          if (archiveTarget) handleArchive(archiveTarget.id);
+        }}
+      />
     </div>
   );
 }

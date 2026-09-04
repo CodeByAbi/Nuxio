@@ -62,8 +62,8 @@ export default function OnboardingPage() {
         // Success - redirect to home
         router.push('/home');
       }
-    } catch (err: any) {
-      setError(err.message);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Gagal membuat workspace');
       setIsLoading(false);
     }
   };
