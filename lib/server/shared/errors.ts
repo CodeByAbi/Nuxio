@@ -76,6 +76,22 @@ export class ConflictError extends AppError {
   }
 }
 
+/**
+ * The request is authenticated, authorized, and well-formed, but performing
+ * it would violate a business invariant (RN-17 last admin, immutable
+ * workspace type, default-category protection, etc.). Maps to 422, same as
+ * `ValidationError`, but is semantically about domain state rather than
+ * input shape — kept distinct so callers can tell the two apart.
+ */
+export class DomainRuleError extends AppError {
+  readonly code = ErrorCode.DOMAIN_RULE_ERROR;
+  readonly statusCode = 422;
+
+  constructor(message = "This action violates a business rule.", options?: { cause?: unknown }) {
+    super(message, options);
+  }
+}
+
 export class RateLimitError extends AppError {
   readonly code = ErrorCode.RATE_LIMIT_EXCEEDED;
   readonly statusCode = 429;

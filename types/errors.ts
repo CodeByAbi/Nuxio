@@ -19,6 +19,15 @@ export enum ErrorCode {
   CONFLICT = "CONFLICT",
   RATE_LIMIT_EXCEEDED = "RATE_LIMIT_EXCEEDED",
   INTERNAL_ERROR = "INTERNAL_ERROR",
+  /** A request is well-formed and the caller is authorized, but the action
+   * violates a business rule (e.g. archiving a default category). Distinct
+   * from VALIDATION_ERROR, which is about malformed input shape, not domain
+   * state. */
+  DOMAIN_RULE_ERROR = "DOMAIN_RULE_ERROR",
+  /** RN-17: the mutation would leave a workspace with zero admins. A more
+   * specific wire code than DOMAIN_RULE_ERROR because the Roadmap contracts
+   * for this exact string on the member-removal/demotion endpoints. */
+  LAST_ADMIN = "LAST_ADMIN",
 }
 
 export interface ValidationFieldError {
