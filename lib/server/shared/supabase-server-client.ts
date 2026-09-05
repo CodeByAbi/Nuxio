@@ -33,3 +33,6 @@ export async function createSupabaseServerClient(): Promise<SupabaseClient<Datab
     },
   });
 }
+
+// Export alias for backwards compatibility
+export { createSupabaseServerClient as createServerClient };
